@@ -1,6 +1,9 @@
 package resolver
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestDetectFormat(t *testing.T) {
 	tests := []struct {
@@ -44,22 +47,24 @@ func TestHFFilename(t *testing.T) {
 }
 
 func TestShelfPathGGUF(t *testing.T) {
-	path, err := ShelfPathGGUF("/shelf", "Qwen/Qwen3-14B-GGUF", "Q4_K_M")
+	root := filepath.Join("test", "shelf")
+	path, err := ShelfPathGGUF(root, "Qwen/Qwen3-14B-GGUF", "Q4_K_M")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/shelf/gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf"
+	want := filepath.Join(root, "gguf", "Qwen", "Qwen3-14B-GGUF", "Qwen3-14B-Q4_K_M.gguf")
 	if path != want {
 		t.Errorf("got %q, want %q", path, want)
 	}
 }
 
 func TestShelfPathSnapshot(t *testing.T) {
-	path, err := ShelfPathSnapshot("/shelf", "mlx-community/Qwen3-14B-4bit", "mlx")
+	root := filepath.Join("test", "shelf")
+	path, err := ShelfPathSnapshot(root, "mlx-community/Qwen3-14B-4bit", "mlx")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/shelf/mlx/mlx-community/Qwen3-14B-4bit"
+	want := filepath.Join(root, "mlx", "mlx-community", "Qwen3-14B-4bit")
 	if path != want {
 		t.Errorf("got %q, want %q", path, want)
 	}

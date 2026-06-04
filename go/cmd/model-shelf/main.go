@@ -69,22 +69,28 @@ Find flags:
 `, version)
 }
 
+// booleanFlags lists flags that don't take a value argument.
+var booleanFlags = map[string]bool{
+	"json":        true,
+	"no-download": true,
+}
+
 // parseFlags is a minimal flag parser that handles --key value and --flag style args.
+// Non-boolean flags that are missing their value argument cause a fatal error.
 func parseFlags(args []string) (positional []string, flags map[string]string) {
 	flags = make(map[string]string)
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
 			key := strings.TrimPrefix(args[i], "--")
-			// Boolean flags (no value)
-			switch key {
-			case "json", "no-download":
+			if booleanFlags[key] {
 				flags[key] = "true"
-			default:
+			} else {
 				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
 					flags[key] = args[i+1]
 					i++
 				} else {
-					flags[key] = "true"
+					fmt.Fprintf(os.Stderr, "error: flag --%s requires a value\n", key)
+					os.Exit(1)
 				}
 			}
 		} else {
@@ -285,7 +291,12 @@ func cmdFind(args []string) int {
 	format := flags["format"]
 	limit := 10
 	if l, ok := flags["limit"]; ok {
-		fmt.Sscanf(l, "%d", &limit)
+		var parsed int
+		if _, err := fmt.Sscanf(l, "%d", &parsed); err != nil || parsed <= 0 {
+			fmt.Fprintf(os.Stderr, "error: --limit must be a positive integer, got %q\n", l)
+			return 1
+		}
+		limit = parsed
 	}
 
 	results, err := search.FindModels(query, format, limit)

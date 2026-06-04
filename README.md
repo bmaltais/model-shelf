@@ -247,7 +247,7 @@ v0.13 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Pub
 
 ### Go version
 
-The Go implementation (`go/`) provides the same CLI interface as the Python version in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
+The Go implementation (`go/`) provides the same CLI commands as the Python version (`resolve`, `init`, `find`, `list`) in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access. Note: the Go version's `init` uses non-interactive auto-detection only (no arrow-key picker); pass an explicit path when multiple drives are available.
 
 Roadmap: `verify` subcommand, quantized-safetensors variants (AWQ/GPTQ).
 

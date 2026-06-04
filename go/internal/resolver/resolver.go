@@ -411,7 +411,16 @@ type hfRepoFile struct {
 func downloadSnapshot(repoID, destDir, format string) error {
 	// List files in the repo via HF API.
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
-	resp, err := http.Get(apiURL)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return err
+	}
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
