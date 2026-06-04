@@ -33,7 +33,38 @@ Local AI workflows download the same model files over and over — across tools,
 
 That's it. The plugin installs a [skill](skills/resolve/SKILL.md) that tells the agent to always resolve through Model Shelf, plus a SessionStart hook that auto-installs the CLI via `uv` on first session. Requires [`uv`](https://docs.astral.sh/uv/) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh` if you don't have it.
 
-### Anywhere else
+### Go binary (recommended — single file, no runtime needed)
+
+Download the latest binary for your platform from [Releases](https://github.com/alexziskind1/model-shelf/releases):
+
+```bash
+# macOS Apple Silicon
+curl -L https://github.com/alexziskind1/model-shelf/releases/latest/download/model-shelf-darwin-arm64 -o model-shelf
+chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+
+# macOS Intel
+curl -L https://github.com/alexziskind1/model-shelf/releases/latest/download/model-shelf-darwin-amd64 -o model-shelf
+chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+
+# Linux amd64
+curl -L https://github.com/alexziskind1/model-shelf/releases/latest/download/model-shelf-linux-amd64 -o model-shelf
+chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+
+# Linux arm64
+curl -L https://github.com/alexziskind1/model-shelf/releases/latest/download/model-shelf-linux-arm64 -o model-shelf
+chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri https://github.com/alexziskind1/model-shelf/releases/latest/download/model-shelf-windows-amd64.exe -OutFile model-shelf.exe
+```
+
+Or build from source (requires Go 1.22+):
+
+```bash
+cd go && go build -o model-shelf ./cmd/model-shelf
+```
+
+### Python (pip / uv)
 
 ```bash
 uv tool install git+https://github.com/alexziskind1/model-shelf
@@ -212,7 +243,13 @@ shelf_root = "~/.cache/model-shelf/models"
 
 ## Status
 
-v0.13 — GGUF, MLX, and safetensors via CLI + Python lib. **Publisher/repo nested layout** that mirrors the Hugging Face Hub (and matches what LM Studio expects). Config is unpinned by default: `shelf_root` is optional, auto-discovered at runtime from any mounted `/Volumes/*/ModelShelf/models` (else internal). `model-shelf init <path>` pins; `model-shelf init` without an argument does not. Multi-shelf lookup: every `resolve` checks the primary plus every mounted drive with a ModelShelf folder plus the internal default. `model-shelf find <query>` searches Hugging Face for loose natural-language queries. Mount precheck refuses to write if the configured volume isn't mounted. Roadmap: `verify` subcommand, quantized-safetensors variants (AWQ/GPTQ).
+v0.13 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Publisher/repo nested layout** that mirrors the Hugging Face Hub (and matches what LM Studio expects). Config is unpinned by default: `shelf_root` is optional, auto-discovered at runtime from any mounted `/Volumes/*/ModelShelf/models` (else internal). `model-shelf init <path>` pins; `model-shelf init` without an argument does not. Multi-shelf lookup: every `resolve` checks the primary plus every mounted drive with a ModelShelf folder plus the internal default. `model-shelf find <query>` searches Hugging Face for loose natural-language queries. Mount precheck refuses to write if the configured volume isn't mounted.
+
+### Go version
+
+The Go implementation (`go/`) provides the same CLI commands as the Python version (`resolve`, `init`, `find`, `list`) in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access. Note: the Go version's `init` uses non-interactive auto-detection only (no arrow-key picker); pass an explicit path when multiple drives are available.
+
+Roadmap: `verify` subcommand, quantized-safetensors variants (AWQ/GPTQ).
 
 ## License
 
