@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'command -v model-shelf >/dev/null 2>&1 && exit 0; command -v uv >/dev/null 2>&1 || { echo \"model-shelf plugin: please install uv (https://docs.astral.sh/uv/) so the CLI can auto-install.\" >&2; exit 0; }; uv tool install --quiet git+https://github.com/alexziskind1/model-shelf >&2'"
+            "command": "bash -c 'command -v model-shelf >/dev/null 2>&1 && exit 0; command -v uv >/dev/null 2>&1 || { echo \"model-shelf plugin: please install uv (https://docs.astral.sh/uv/) so the CLI can auto-install.\" >&2; exit 0; }; uv tool install --quiet git+https://github.com/bmaltais/model-shelf >&2'"
           }
         ]
       }
