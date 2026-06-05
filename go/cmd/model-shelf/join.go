@@ -110,7 +110,8 @@ func cmdJoin(args []string) int {
 	}
 
 	// Persist received mesh state so the daemon has full mesh knowledge on (re)start.
-	// Build node list: self + all nodes returned by the peer.
+	// Build node list: self + all nodes returned by the peer, deduped by name.
+	seen := map[string]bool{cfg.Name: true}
 	meshNodes := []daemon.MeshNode{
 		{
 			Name:    cfg.Name,
@@ -121,6 +122,10 @@ func cmdJoin(args []string) int {
 		},
 	}
 	for _, n := range joinResp.Nodes {
+		if seen[n.Name] {
+			continue
+		}
+		seen[n.Name] = true
 		meshNodes = append(meshNodes, daemon.MeshNode{
 			Name:    n.Name,
 			Address: n.Address,
