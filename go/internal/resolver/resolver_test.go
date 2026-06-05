@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -195,3 +196,95 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	req.URL.Host = t.target[len("http://"):]
 	return t.transport.RoundTrip(req)
 }
+
+func TestInitShelf_FileBlocksPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
+
+	// Create a regular file where a directory is needed.
+	blocker := filepath.Join(tmp, "blocker")
+	if err := os.WriteFile(blocker, []byte("I'm a file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{ShelfRoot: filepath.Join(blocker, "models")}
+	_, err := InitShelf(cfg)
+	if err == nil {
+		t.Fatal("expected error when path component is a file")
+	}
+	if got := err.Error(); !strings.Contains(got, "exists but is not a directory") {
+		t.Errorf("unexpected error message: %s", got)
+	}
+}
+
+func TestCheckPathAncestors_OK(t *testing.T) {
+	tmp := t.TempDir()
+	// Path that can be created — no blockers.
+	err := checkPathAncestors(filepath.Join(tmp, "a", "b", "c"))
+	if err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+func TestExtractRepoID(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://huggingface.co/owner/repo/resolve/main/file.gguf", "owner/repo"},
+		{"https://huggingface.co/a/b/resolve/main/deep/file.bin", "a/b"},
+		{"https://example.com/foo", ""},
+	}
+	for _, tt := range tests {
+		got := extractRepoID(tt.url)
+		if got != tt.want {
+			t.Errorf("extractRepoID(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestClarify401_RepoNotFound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Server returns 404 for the API check (repo doesn't exist).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	err := clarify401("https://huggingface.co/fake-user/fake-repo/resolve/main/file.gguf")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); !strings.Contains(got, "not found on Hugging Face") {
+		t.Errorf("unexpected error: %s", got)
+	}
+}
+
+func TestClarify401_RepoRequiresAuth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Server returns 200 for the API check (repo exists but is private).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	err := clarify401("https://huggingface.co/private-user/private-repo/resolve/main/file.gguf")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); !strings.Contains(got, "requires authentication") {
+		t.Errorf("unexpected error: %s", got)
+	}
+}
+
+

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -92,8 +93,13 @@ func (d *Daemon) Run() error {
 
 	addr := fmt.Sprintf(":%d", d.cfg.Port)
 	d.server = &http.Server{
-		Addr:    addr,
 		Handler: handler,
+	}
+
+	// Bind the port before logging — ensures "listening" only prints on success.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
 	}
 
 	// Graceful shutdown on SIGINT/SIGTERM.
@@ -113,7 +119,7 @@ func (d *Daemon) Run() error {
 	}()
 
 	log.Printf("model-shelf daemon: listening on %s (node: %s, roles: %v)", addr, d.cfg.Name, d.cfg.Roles)
-	err := d.server.ListenAndServe()
+	err = d.server.Serve(ln)
 	if err == http.ErrServerClosed {
 		return nil
 	}
