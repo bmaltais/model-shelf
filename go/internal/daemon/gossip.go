@@ -293,9 +293,11 @@ func (g *Gossip) pollPeers() {
 				nodes[i].DiskTotalGB = hr.DiskTotalGB
 				metricsChanged = true
 			}
+			// Update uptime locally but don't trigger event broadcast —
+			// uptime always changes and would cause gossip spam every poll.
 			if hr.UptimeSeconds > 0 {
 				nodes[i].UptimeSeconds = hr.UptimeSeconds
-				metricsChanged = true
+				changed = true
 			}
 			if metricsChanged {
 				changed = true
@@ -333,6 +335,9 @@ func (g *Gossip) pollPeers() {
 					g.nodes[j].Status = updated.Status
 					g.nodes[j].MissedPolls = updated.MissedPolls
 					g.nodes[j].DiskFreeGB = updated.DiskFreeGB
+					g.nodes[j].DiskTotalGB = updated.DiskTotalGB
+					g.nodes[j].UptimeSeconds = updated.UptimeSeconds
+					g.nodes[j].LastSeen = updated.LastSeen
 					break
 				}
 			}

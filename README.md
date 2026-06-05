@@ -136,7 +136,7 @@ model-shelf service uninstall
 # Human-readable table with status and disk metrics
 model-shelf nodes
 
-# JSON output for scripting (includes disk_total_gb, disk_free_gb, uptime_seconds)
+# JSON output for scripting (includes disk_total_gb, disk_free_gb, uptime_seconds, last_seen)
 model-shelf nodes --json
 ```
 
