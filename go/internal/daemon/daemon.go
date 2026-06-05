@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,8 @@ type Daemon struct {
 	cfg       *meshconfig.Config
 	startTime time.Time
 	server    *http.Server
+	mu        sync.Mutex
+	nodes     []NodeInfo
 }
 
 // HealthResponse is returned by GET /v1/health.
@@ -34,18 +37,49 @@ type HealthResponse struct {
 	UptimeSeconds float64  `json:"uptime_seconds"`
 }
 
+// NodeInfo describes a mesh node.
+type NodeInfo struct {
+	Name    string   `json:"name"`
+	Address string   `json:"address"`
+	Port    int      `json:"port"`
+	Roles   []string `json:"roles"`
+}
+
+// JoinRequest is sent by a node wanting to join the mesh.
+type JoinRequest struct {
+	Name    string   `json:"name"`
+	Address string   `json:"address"`
+	Port    int      `json:"port"`
+	Roles   []string `json:"roles"`
+}
+
+// JoinResponse is returned by POST /v1/join.
+type JoinResponse struct {
+	OK    bool       `json:"ok"`
+	Nodes []NodeInfo `json:"nodes"`
+}
+
 // New creates a new Daemon from config.
 func New(cfg *meshconfig.Config) *Daemon {
-	return &Daemon{
+	d := &Daemon{
 		cfg:       cfg,
 		startTime: time.Now(),
 	}
+	// Register self as a node.
+	d.nodes = []NodeInfo{{
+		Name:    cfg.Name,
+		Address: meshconfig.GetHostname(),
+		Roles:   cfg.Roles,
+		Port:    cfg.Port,
+	}}
+	return d
 }
 
 // Run starts the HTTP server and blocks until shutdown.
 func (d *Daemon) Run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", d.handleHealth)
+	mux.HandleFunc("/v1/join", d.handleJoin)
 
 	handler := d.authMiddleware(mux)
 
@@ -94,6 +128,47 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req JoinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "invalid request body"}`))
+		return
+	}
+	if req.Name == "" || req.Port == 0 || req.Address == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "name, address, and port are required"}`))
+		return
+	}
+
+	d.mu.Lock()
+	// Return existing nodes (before adding the new one) as bootstrap state.
+	existingNodes := make([]NodeInfo, len(d.nodes))
+	copy(existingNodes, d.nodes)
+
+	// Register the new node.
+	d.nodes = append(d.nodes, NodeInfo{
+		Name:    req.Name,
+		Address: req.Address,
+		Port:    req.Port,
+		Roles:   req.Roles,
+	})
+	d.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(JoinResponse{
+		OK:    true,
+		Nodes: existingNodes,
+	})
 }
 
 // authMiddleware checks the mesh key on all /v1/ requests.
