@@ -418,12 +418,18 @@ func cmdDaemon(args []string) int {
 
 	// Load mesh config.
 	if !meshconfig.Exists() {
-		fmt.Fprintf(os.Stderr, "error: mesh not configured. Run `model-shelf init --role <roles> --shelf <path>` first.\n")
+		fmt.Fprintf(os.Stderr, "error: mesh not configured. Create %s with node name, roles, and shelf_root.\n", meshconfig.ConfigPath())
 		return 1
 	}
 	cfg, err := meshconfig.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Validate port from config.
+	if cfg.Port <= 0 || cfg.Port > 65535 {
+		fmt.Fprintf(os.Stderr, "error: invalid port %d in config (must be 1-65535)\n", cfg.Port)
 		return 1
 	}
 

@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -66,7 +67,7 @@ func (d *Daemon) Run() error {
 		d.server.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("model-shelf daemon: listening on %s (node: %s, roles: %v)\n", addr, d.cfg.Name, d.cfg.Roles)
+	log.Printf("model-shelf daemon: listening on %s (node: %s, roles: %v)", addr, d.cfg.Name, d.cfg.Roles)
 	err := d.server.ListenAndServe()
 	if err == http.ErrServerClosed {
 		return nil
@@ -113,8 +114,11 @@ func (d *Daemon) authMiddleware(next http.Handler) http.Handler {
 
 		auth := r.Header.Get("Authorization")
 		expected := "Bearer " + meshKey
-		if auth != expected {
-			http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "unauthorized"}`))
 			return
 		}
 

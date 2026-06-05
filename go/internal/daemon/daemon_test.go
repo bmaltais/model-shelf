@@ -14,7 +14,7 @@ func TestHealthEndpoint(t *testing.T) {
 		Name:      "test-node",
 		Port:      8844,
 		Roles:     []string{"controller", "store"},
-		ShelfRoot: "/tmp",
+		ShelfRoot: t.TempDir(),
 	}
 	d := New(cfg)
 
@@ -43,6 +43,12 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	if resp.UptimeSeconds < 0 {
 		t.Errorf("uptime should be >= 0, got %f", resp.UptimeSeconds)
+	}
+	if resp.DiskTotalGB <= 0 {
+		t.Errorf("disk_total_gb should be > 0, got %f", resp.DiskTotalGB)
+	}
+	if resp.DiskFreeGB <= 0 {
+		t.Errorf("disk_free_gb should be > 0, got %f", resp.DiskFreeGB)
 	}
 }
 
