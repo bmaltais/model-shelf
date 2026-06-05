@@ -13,6 +13,7 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 	"github.com/alexziskind1/model-shelf/internal/search"
+	"github.com/alexziskind1/model-shelf/internal/service"
 )
 
 const version = "0.13.1"
@@ -35,6 +36,8 @@ func main() {
 		os.Exit(cmdList(os.Args[2:]))
 	case "daemon":
 		os.Exit(cmdDaemon(os.Args[2:]))
+	case "service":
+		os.Exit(cmdService(os.Args[2:]))
 	case "version", "--version", "-v":
 		fmt.Printf("model-shelf %s (go)\n", version)
 		os.Exit(0)
@@ -57,6 +60,7 @@ Usage:
   model-shelf find <query>             Search Hugging Face for models
   model-shelf list                     List shelf contents
   model-shelf daemon                   Start the mesh daemon (foreground)
+  model-shelf service <action>         Manage the system service
   model-shelf version                  Print version
 
 Resolve flags:
@@ -79,6 +83,13 @@ Init flags:
   --role <roles>     Node roles: controller,store,executor (required)
   --name <name>      Node name (default: hostname)
   --force            Overwrite existing config
+
+Service actions:
+  install            Install and enable the service (auto-starts on login)
+  uninstall          Stop and remove the service
+  start              Start the service
+  stop               Stop the service
+  status             Show whether the service is running
 `, version)
 }
 
@@ -450,6 +461,56 @@ func cmdDaemon(args []string) int {
 	d := daemon.New(cfg)
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func cmdService(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "usage: model-shelf service <install|uninstall|start|stop|status>\n")
+		return 1
+	}
+
+	action := args[0]
+	switch action {
+	case "install":
+		if err := service.Install(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Println("model-shelf: service installed and enabled (auto-starts on login)")
+	case "uninstall":
+		if err := service.Uninstall(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Println("model-shelf: service removed")
+	case "start":
+		if err := service.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Println("model-shelf: service started")
+	case "stop":
+		if err := service.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Println("model-shelf: service stopped")
+	case "status":
+		status, err := service.GetStatus()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Printf("model-shelf: %s\n", status)
+		if status.Detail != "" {
+			fmt.Printf("\n%s\n", status.Detail)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown service action: %s\n", action)
+		fmt.Fprintf(os.Stderr, "usage: model-shelf service <install|uninstall|start|stop|status>\n")
 		return 1
 	}
 	return 0
