@@ -10,7 +10,6 @@ import (
 
 	"github.com/alexziskind1/model-shelf/internal/config"
 	"github.com/alexziskind1/model-shelf/internal/daemon"
-	"github.com/alexziskind1/model-shelf/internal/detect"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 	"github.com/alexziskind1/model-shelf/internal/search"
@@ -53,7 +52,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `model-shelf %s — local-first Hugging Face model resolver
 
 Usage:
-  model-shelf init [path]              Initialize shelf (auto-detect or explicit path)
+  model-shelf init --role <roles> --shelf <path>  Initialize mesh node
   model-shelf resolve <repo_id>        Resolve a model to a local path
   model-shelf find <query>             Search Hugging Face for models
   model-shelf list                     List shelf contents
@@ -74,6 +73,12 @@ Find flags:
 
 Daemon flags:
   --port <N>         Override listen port (default: 8844)
+
+Init flags:
+  --shelf <path>     Path for model storage (required)
+  --role <roles>     Node roles: controller,store,executor (required)
+  --name <name>      Node name (default: hostname)
+  --force            Overwrite existing config
 `, version)
 }
 
@@ -81,6 +86,7 @@ Daemon flags:
 var booleanFlags = map[string]bool{
 	"json":        true,
 	"no-download": true,
+	"force":       true,
 }
 
 // parseFlags is a minimal flag parser that handles --key value and --flag style args.
@@ -177,116 +183,88 @@ func printResultPretty(repoID string, result *resolver.ResolveResult) {
 }
 
 func cmdInit(args []string) int {
-	positional, flags := parseFlags(args)
+	_, flags := parseFlags(args)
 
-	cfg, err := loadCfg(flags["config"])
-	if err != nil {
-		// Config might not exist yet — that's fine for init.
-		cfg = &resolver.Config{AllowDownloads: true}
+	// --shelf is required.
+	shelfPath := flags["shelf"]
+	if shelfPath == "" {
+		fmt.Fprintf(os.Stderr, "error: --shelf is required\n")
+		fmt.Fprintf(os.Stderr, "usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--force]\n")
+		return 1
 	}
 
-	var chosenPath string
-	if len(positional) > 0 {
-		// Explicit path provided.
-		p, err := filepath.Abs(positional[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-		chosenPath = p
-	} else {
-		// Auto-detect.
-		chosenPath = resolveShelfPathAuto()
-		if chosenPath == "" {
-			fmt.Fprintf(os.Stderr, "error: could not determine a shelf location\n")
-			return 1
-		}
+	// --role is required.
+	roleStr := flags["role"]
+	if roleStr == "" {
+		fmt.Fprintf(os.Stderr, "error: --role is required\n")
+		fmt.Fprintf(os.Stderr, "usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--force]\n")
+		return 1
+	}
+	roles := strings.Split(roleStr, ",")
+	for i := range roles {
+		roles[i] = strings.TrimSpace(roles[i])
 	}
 
-	cfg.ShelfRoot = chosenPath
-	created, err := resolver.InitShelf(cfg)
+	// Resolve shelf path to absolute.
+	absShelf, err := filepath.Abs(shelfPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
-	configPath := config.WritableConfigPath(flags["config"])
-	if len(positional) > 0 {
-		// Explicit path → pin.
-		if err := config.WriteConfig(configPath, chosenPath, cfg.AllowDownloads); err != nil {
-			fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
-			return 1
-		}
-		fmt.Printf("model-shelf: wrote %s\n", configPath)
-		fmt.Printf("            shelf_root = %s  (pinned)\n", chosenPath)
-	} else {
-		fmt.Printf("model-shelf: using %s  (auto-discovered, not pinned in config)\n", chosenPath)
+	// Check if config already exists (unless --force).
+	force := flags["force"] == "true"
+	if meshconfig.Exists() && !force {
+		fmt.Fprintf(os.Stderr, "error: %s already exists (use --force to overwrite)\n", meshconfig.ConfigPath())
+		return 1
+	}
+
+	// Determine node name.
+	name := flags["name"]
+	if name == "" {
+		name = meshconfig.GetHostname()
+	}
+
+	// Write mesh config.
+	meshCfg := &meshconfig.Config{
+		Name:      name,
+		Port:      meshconfig.DefaultPort,
+		Roles:     roles,
+		ShelfRoot: absShelf,
+	}
+	if err := meshconfig.Write(meshCfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
+		return 1
+	}
+	fmt.Printf("model-shelf: wrote %s\n", meshconfig.ConfigPath())
+
+	// Generate mesh key.
+	key, err := meshconfig.GenerateMeshKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error generating mesh key: %v\n", err)
+		return 1
+	}
+	fmt.Printf("model-shelf: generated mesh key at %s\n", meshconfig.MeshKeyPath())
+	fmt.Printf("\n  mesh key: %s\n\n", key)
+	fmt.Println("  Share this key with other nodes to join the mesh.")
+
+	// Create shelf directories.
+	resolverCfg := &resolver.Config{ShelfRoot: absShelf, AllowDownloads: true}
+	created, err := resolver.InitShelf(resolverCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
 	}
 
 	if len(created) == 0 {
-		fmt.Printf("model-shelf: shelf at %s already initialized\n", cfg.ShelfRoot)
-		return 0
-	}
-	fmt.Printf("model-shelf: initialized shelf at %s\n", cfg.ShelfRoot)
-	for _, p := range created {
-		fmt.Printf("  + %s\n", p)
+		fmt.Printf("model-shelf: shelf at %s already initialized\n", absShelf)
+	} else {
+		fmt.Printf("model-shelf: initialized shelf at %s\n", absShelf)
+		for _, p := range created {
+			fmt.Printf("  + %s\n", p)
+		}
 	}
 	return 0
-}
-
-func resolveShelfPathAuto() string {
-	candidates := detect.DetectStorageCandidates()
-
-	// Single existing external → use it.
-	var existingExternal []detect.StorageCandidate
-	for _, c := range candidates {
-		if c.Existing && c.IsExternal {
-			existingExternal = append(existingExternal, c)
-		}
-	}
-	if len(existingExternal) == 1 {
-		fmt.Printf("model-shelf: using existing shelf at %s\n", existingExternal[0].Path)
-		return existingExternal[0].Path
-	}
-	if len(existingExternal) > 1 {
-		fmt.Fprintf(os.Stderr, "error: multiple existing external shelves; specify a path explicitly:\n")
-		for _, c := range existingExternal {
-			fmt.Fprintf(os.Stderr, "  - %s\n", c.Path)
-		}
-		return ""
-	}
-
-	// No existing external — check if any external drives exist.
-	var external []detect.StorageCandidate
-	for _, c := range candidates {
-		if c.IsExternal {
-			external = append(external, c)
-		}
-	}
-
-	// Find internal candidate.
-	var internal *detect.StorageCandidate
-	for i := range candidates {
-		if !candidates[i].IsExternal {
-			internal = &candidates[i]
-			break
-		}
-	}
-
-	if len(external) == 0 {
-		if internal == nil {
-			return ""
-		}
-		fmt.Printf("model-shelf: no external drives detected; using internal storage at %s\n", internal.Path)
-		return internal.Path
-	}
-
-	// Non-interactive: use internal.
-	if internal != nil {
-		fmt.Fprintf(os.Stderr, "model-shelf: not interactive; using internal storage at %s\n", internal.Path)
-		return internal.Path
-	}
-	return ""
 }
 
 func cmdFind(args []string) int {
