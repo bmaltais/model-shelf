@@ -285,13 +285,13 @@ func cmdInit(args []string) int {
 	}
 	fmt.Printf("model-shelf: wrote %s\n", meshconfig.ConfigPath())
 
-	// Generate mesh key only if one doesn't already exist.
+	// Mesh key handling: only generate for controller role.
 	keyPath := meshconfig.MeshKeyPath()
 	if keyData, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(keyData))) > 0 {
 		key := strings.TrimSpace(string(keyData))
 		fmt.Printf("model-shelf: existing mesh key at %s (preserved)\n", keyPath)
 		fmt.Printf("\n  mesh key: %s\n\n", key)
-	} else {
+	} else if seen["controller"] {
 		key, err := meshconfig.GenerateMeshKey()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error generating mesh key: %v\n", err)
@@ -300,6 +300,9 @@ func cmdInit(args []string) int {
 		fmt.Printf("model-shelf: generated mesh key at %s\n", keyPath)
 		fmt.Printf("\n  mesh key: %s\n\n", key)
 		fmt.Println("  Share this key with other nodes to join the mesh.")
+	} else {
+		fmt.Println("model-shelf: no mesh key generated (non-controller node)")
+		fmt.Println("  This node will receive the mesh key when joining via: model-shelf join <peer>")
 	}
 
 	if len(created) == 0 {
