@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -23,8 +22,6 @@ type Daemon struct {
 	cfg       *meshconfig.Config
 	startTime time.Time
 	server    *http.Server
-	mu        sync.Mutex
-	nodes     []NodeInfo
 	gossip    *Gossip
 }
 
@@ -74,12 +71,6 @@ func New(cfg *meshconfig.Config) *Daemon {
 		Port:    cfg.Port,
 		Status:  StatusOnline,
 	}
-	d.nodes = []NodeInfo{{
-		Name:    cfg.Name,
-		Address: meshconfig.GetHostname(),
-		Roles:   cfg.Roles,
-		Port:    cfg.Port,
-	}}
 	d.gossip = NewGossip(selfNode, cfg.MeshKey)
 	return d
 }
@@ -165,19 +156,21 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.Lock()
-	// Return existing nodes (before adding the new one) as bootstrap state.
-	existingNodes := make([]NodeInfo, len(d.nodes))
-	copy(existingNodes, d.nodes)
-
-	// Register the new node.
-	d.nodes = append(d.nodes, NodeInfo{
-		Name:    req.Name,
-		Address: req.Address,
-		Port:    req.Port,
-		Roles:   req.Roles,
-	})
-	d.mu.Unlock()
+	// Get existing nodes from gossip state (before adding the new one).
+	// Filter out the joining node itself — it doesn't need to bootstrap itself.
+	gossipNodes := d.gossip.Nodes()
+	existingNodes := make([]NodeInfo, 0, len(gossipNodes))
+	for _, n := range gossipNodes {
+		if n.Name == req.Name {
+			continue
+		}
+		existingNodes = append(existingNodes, NodeInfo{
+			Name:    n.Name,
+			Address: n.Address,
+			Port:    n.Port,
+			Roles:   n.Roles,
+		})
+	}
 
 	// Register in gossip state and push join event to peers.
 	newNode := MeshNode{
