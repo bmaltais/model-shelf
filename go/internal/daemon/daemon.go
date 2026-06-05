@@ -250,6 +250,12 @@ func (d *Daemon) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Health endpoint is always public (liveness probe).
+		if r.URL.Path == "/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		meshKey := d.cfg.MeshKey
 		if meshKey == "" {
 			// No key configured — allow all (standalone mode).

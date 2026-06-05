@@ -91,7 +91,7 @@ func TestAuthMiddleware_ValidKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/nodes", nil)
 	req.Header.Set("Authorization", "Bearer secret123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -109,13 +109,31 @@ func TestAuthMiddleware_InvalidKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/nodes", nil)
 	req.Header.Set("Authorization", "Bearer wrongkey")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestAuthMiddleware_HealthPublic(t *testing.T) {
+	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}, MeshKey: "secret123"}
+	d := New(cfg)
+
+	handler := d.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Health endpoint should be accessible without auth.
+	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
 
@@ -127,7 +145,7 @@ func TestAuthMiddleware_MissingKey(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/nodes", nil)
 	// No Authorization header.
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
