@@ -40,8 +40,12 @@ func main() {
 		os.Exit(cmdDaemon(os.Args[2:]))
 	case "join":
 		os.Exit(cmdJoin(os.Args[2:]))
+	case "leave":
+		os.Exit(cmdLeave(os.Args[2:]))
 	case "nodes":
 		os.Exit(cmdNodes(os.Args[2:]))
+	case "role":
+		os.Exit(cmdRole(os.Args[2:]))
 	case "service":
 		os.Exit(cmdService(os.Args[2:]))
 	case "version", "--version", "-v":
@@ -63,10 +67,12 @@ func printUsage() {
 Usage:
   model-shelf init --role <roles> --shelf <path>  Initialize mesh node
   model-shelf join <peer> [--key <mesh-key>]      Join an existing mesh
+  model-shelf leave                    Leave the mesh
   model-shelf resolve <repo_id>        Resolve a model to a local path
   model-shelf find <query>             Search Hugging Face for models
   model-shelf list                     List shelf contents
   model-shelf nodes [--json]            List mesh nodes
+  model-shelf role <set|add|remove>    Manage node roles
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
   model-shelf version                  Print version
@@ -605,7 +611,7 @@ func cmdDaemon(args []string) int {
 
 	// Load mesh config.
 	if !meshconfig.Exists() {
-		fmt.Fprintf(os.Stderr, "error: mesh not configured. Create %s with node name, roles, and shelf_root.\n", meshconfig.ConfigPath())
+		fmt.Fprintf(os.Stderr, "error: not part of a mesh — run `model-shelf init` and `model-shelf join`\n")
 		return 1
 	}
 	cfg, err := meshconfig.Load()

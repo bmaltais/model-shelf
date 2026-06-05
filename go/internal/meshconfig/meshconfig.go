@@ -48,6 +48,11 @@ func StateDir() string {
 	return filepath.Join(ConfigDir(), "state")
 }
 
+// MeshStatePath returns the path to ~/.model-shelf/state/mesh.json.
+func MeshStatePath() string {
+	return filepath.Join(StateDir(), "mesh.json")
+}
+
 // Exists returns true if ~/.model-shelf/config.toml exists.
 func Exists() bool {
 	_, err := os.Stat(ConfigPath())
