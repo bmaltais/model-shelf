@@ -432,6 +432,88 @@ func TestJoinEndpoint_PushesGossipState(t *testing.T) {
 	}
 }
 
+func TestAddNode_EvictsOldNodeWithSameAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now())
+
+	// Add a node named "ocilab1" at 10.0.0.2:8844.
+	g.AddNode(MeshNode{
+		Name:    "ocilab1",
+		Address: "10.0.0.2",
+		Port:    8844,
+		Roles:   []string{"controller", "store"},
+		Status:  StatusOnline,
+	})
+
+	// Same machine re-registers with a new name "localtest" at same address.
+	g.AddNode(MeshNode{
+		Name:    "localtest",
+		Address: "10.0.0.2",
+		Port:    8844,
+		Roles:   []string{"controller", "store"},
+		Status:  StatusOnline,
+	})
+
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "ocilab1" {
+			t.Error("old node name 'ocilab1' should have been evicted after rename")
+		}
+	}
+
+	// Should have exactly 2 nodes: controller + localtest.
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes (controller + localtest), got %d", len(nodes))
+		for _, n := range nodes {
+			t.Logf("  node: %s @ %s:%d", n.Name, n.Address, n.Port)
+		}
+	}
+}
+
+func TestApplyEvent_EvictsOldNodeWithSameAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now())
+
+	// Existing node "ocilab1" at 10.0.0.2:8844.
+	g.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "ocilab1", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	// Same address re-announces as "localtest".
+	g.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "localtest", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "ocilab1" {
+			t.Error("old node 'ocilab1' should have been evicted by same-address re-registration")
+		}
+	}
+
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(nodes))
+	}
+}
+
 func TestPollPeers_UpdatesDiskFreeGB(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

@@ -141,9 +141,30 @@ func (g *Gossip) Nodes() []MeshNode {
 	return out
 }
 
+// evictByAddressLocked removes any node with the same address:port but a
+// different name. This handles node renames — when a machine re-announces
+// under a new name, the stale entry is evicted. Must be called with mu held.
+func (g *Gossip) evictByAddressLocked(name, address string, port int) {
+	if address == "" {
+		return
+	}
+	filtered := g.nodes[:0]
+	for _, n := range g.nodes {
+		if n.Address == address && n.Port == port && n.Name != name {
+			log.Printf("gossip: evicting stale node %q (same address %s:%d as %q)", n.Name, address, port, name)
+			continue
+		}
+		filtered = append(filtered, n)
+	}
+	g.nodes = filtered
+}
+
 // AddNode adds or updates a node and pushes a join event to peers.
+// If another node with the same address:port exists under a different name,
+// the old entry is evicted (handles node renames).
 func (g *Gossip) AddNode(node MeshNode) {
 	g.mu.Lock()
+	g.evictByAddressLocked(node.Name, node.Address, node.Port)
 	found := false
 	for i := range g.nodes {
 		if g.nodes[i].Name == node.Name {
@@ -201,6 +222,7 @@ func (g *Gossip) ApplyEvent(ev Event) {
 
 	switch ev.Type {
 	case EventJoin, EventHealthChange:
+		g.evictByAddressLocked(ev.Node.Name, ev.Node.Address, ev.Node.Port)
 		found := false
 		for i := range g.nodes {
 			if g.nodes[i].Name == ev.Node.Name {
