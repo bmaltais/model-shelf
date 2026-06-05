@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SupportedFormats lists the model formats handled by Model Shelf.
@@ -116,6 +117,7 @@ func splitRepoID(repoID string) (string, string, error) {
 }
 
 // HFFilename returns the expected filename in a Hugging Face GGUF repo.
+// This is a heuristic fallback — prefer LookupGGUFFilename which queries the API.
 func HFFilename(repoID, quant string) string {
 	parts := strings.Split(repoID, "/")
 	name := parts[len(parts)-1]
@@ -126,6 +128,95 @@ func HFFilename(repoID, quant string) string {
 		return name + ".gguf"
 	}
 	return name + "-" + quant + ".gguf"
+}
+
+// LookupGGUFFilename queries the HF API to find the actual GGUF file matching
+// the requested quantization. Falls back to the heuristic HFFilename if the API
+// is unreachable or no match is found.
+func LookupGGUFFilename(repoID, quant string) string {
+	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return HFFilename(repoID, quant)
+	}
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return HFFilename(repoID, quant)
+	}
+	defer resp.Body.Close()
+
+	var repoInfo struct {
+		Siblings []hfRepoFile `json:"siblings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
+		return HFFilename(repoID, quant)
+	}
+
+	return matchGGUFFile(repoInfo.Siblings, quant, repoID)
+}
+
+// matchGGUFFile picks the best .gguf file matching the quant from a list of repo files.
+func matchGGUFFile(siblings []hfRepoFile, quant, repoID string) string {
+	quantLower := strings.ToLower(quant)
+	var candidates []string
+	for _, f := range siblings {
+		name := f.Filename
+		if !strings.HasSuffix(strings.ToLower(name), ".gguf") {
+			continue
+		}
+		// Check if the quant string appears in the filename (case-insensitive).
+		nameLower := strings.ToLower(name)
+		if strings.Contains(nameLower, quantLower) {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	if len(candidates) > 1 {
+		// Prefer exact quant boundary match (surrounded by non-alphanumeric).
+		for _, c := range candidates {
+			lower := strings.ToLower(c)
+			if hasBoundaryMatch(lower, quantLower) {
+				return c
+			}
+		}
+		// No exact boundary match; return first candidate.
+		return candidates[0]
+	}
+	// No match found via API — fall back to heuristic.
+	return HFFilename(repoID, quant)
+}
+
+func isAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// hasBoundaryMatch checks if needle appears in s at a word boundary (all occurrences).
+func hasBoundaryMatch(s, needle string) bool {
+	offset := 0
+	for {
+		idx := strings.Index(s[offset:], needle)
+		if idx < 0 {
+			return false
+		}
+		absIdx := offset + idx
+		before := absIdx == 0 || !isAlphaNum(s[absIdx-1])
+		after := absIdx+len(needle) >= len(s) || !isAlphaNum(s[absIdx+len(needle)])
+		if before && after {
+			return true
+		}
+		offset = absIdx + 1
+	}
 }
 
 // ShelfPathGGUF returns the shelf path for a GGUF model file.
@@ -390,17 +481,43 @@ func resolveGGUF(cfg *Config, repoID, quant string) (*ResolveResult, error) {
 		return &ResolveResult{Status: "missing", Source: "none", Format: "gguf", Path: nil, Checks: checks}, nil
 	}
 
+	// Acquire lock to prevent concurrent downloads of the same model.
+	release, err := acquireLock(cfg.ShelfRoot, repoID, quant)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Re-check shelf after acquiring lock — another process may have completed the download.
+	for _, parent := range ListShelfCandidates(cfg) {
+		candidate, err := ShelfPathGGUF(parent, repoID, quant)
+		if err != nil {
+			return nil, err
+		}
+		if info, fErr := os.Stat(candidate); fErr == nil && !info.IsDir() {
+			shelf := filepath.Join(parent, "gguf")
+			checks = append(checks, Check{Location: "shelf", Root: shelf, Result: "hit"})
+			path := candidate
+			return &ResolveResult{Status: "found", Source: "local_shelf", Format: "gguf", Path: &path, Checks: checks}, nil
+		}
+	}
+
 	// Download into primary shelf.
+	// Use the deterministic shelf path for local storage.
 	finalPath, err := ShelfPathGGUF(cfg.ShelfRoot, repoID, quant)
 	if err != nil {
 		return nil, err
 	}
+
+	// Look up the actual filename from the HF API for the download URL
+	// (handles non-standard naming conventions like TheBloke's).
+	hfName := LookupGGUFFilename(repoID, quant)
+
 	dir := filepath.Dir(finalPath)
 	dirExisted := dirExists(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	hfName := HFFilename(repoID, quant)
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, hfName)
 	if err := downloadFile(url, finalPath); err != nil {
 		os.Remove(finalPath) // remove partial/corrupt file
@@ -430,6 +547,27 @@ func resolveSnapshot(cfg *Config, repoID, format string) (*ResolveResult, error)
 
 	if !cfg.AllowDownloads {
 		return &ResolveResult{Status: "missing", Source: "none", Format: format, Path: nil, Checks: checks}, nil
+	}
+
+	// Acquire lock to prevent concurrent downloads of the same model.
+	release, err := acquireLock(cfg.ShelfRoot, repoID, format)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Re-check shelf after acquiring lock — another process may have completed the download.
+	for _, parent := range ListShelfCandidates(cfg) {
+		candidate, cErr := ShelfPathSnapshot(parent, repoID, format)
+		if cErr != nil {
+			return nil, cErr
+		}
+		if looksLikeModelDir(candidate) {
+			shelf := filepath.Join(parent, format)
+			checks = append(checks, Check{Location: "shelf", Root: shelf, Result: "hit"})
+			path := candidate
+			return &ResolveResult{Status: "found", Source: "local_shelf", Format: format, Path: &path, Checks: checks}, nil
+		}
 	}
 
 	// Download snapshot into primary shelf.
