@@ -210,6 +210,20 @@ func cmdResolve(args []string) int {
 	if result.Status == "missing" {
 		return 1
 	}
+
+	// Update inventory last-accessed timestamp on successful resolve.
+	if result.Path != nil {
+		var size int64
+		if info, err := os.Stat(*result.Path); err == nil {
+			if info.IsDir() {
+				size = dirSize(*result.Path)
+			} else {
+				size = info.Size()
+			}
+		}
+		daemon.TouchModel(repoID, result.Format, quant, size)
+	}
+
 	return 0
 }
 
