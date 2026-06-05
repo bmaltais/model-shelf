@@ -363,6 +363,7 @@ func resolveGGUF(cfg *Config, repoID, quant string) (*ResolveResult, error) {
 	hfName := HFFilename(repoID, quant)
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, hfName)
 	if err := downloadFile(url, finalPath); err != nil {
+		os.Remove(finalPath) // remove partial/corrupt file
 		cleanupOnFailure(dir, dirExisted)
 		return nil, fmt.Errorf("download failed: %w", err)
 	}

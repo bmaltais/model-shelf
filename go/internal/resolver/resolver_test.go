@@ -1,6 +1,8 @@
 package resolver
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,4 +114,84 @@ func TestDirExists(t *testing.T) {
 	if dirExists(filepath.Join(tmp, "nonexistent")) {
 		t.Error("expected false for nonexistent path")
 	}
+}
+
+func TestResolveGGUF_404CleansUpDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Start a test server that always returns 404.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// Override http.DefaultClient transport to redirect HF requests to our test server.
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	shelfRoot := t.TempDir()
+	// Create the shelf root with gguf subdir so CheckStorageAvailable passes.
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+
+	cfg := &Config{
+		ShelfRoot:      shelfRoot,
+		AllowDownloads: true,
+	}
+
+	_, err := ResolveModel(cfg, "TestPublisher/TestModel-GGUF", "gguf", "Q4_K_M")
+	if err == nil {
+		t.Fatal("expected download error, got nil")
+	}
+
+	// The publisher/repo directory should NOT exist after the failure.
+	ghostDir := filepath.Join(shelfRoot, "gguf", "TestPublisher", "TestModel-GGUF")
+	if _, statErr := os.Stat(ghostDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected ghost directory %q to be cleaned up, but it still exists", ghostDir)
+	}
+}
+
+func TestResolveSnapshot_404CleansUpDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Start a test server that always returns 404.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	shelfRoot := t.TempDir()
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfg := &Config{
+		ShelfRoot:      shelfRoot,
+		AllowDownloads: true,
+	}
+
+	_, err := ResolveModel(cfg, "TestPublisher/TestModel", "safetensors", "")
+	if err == nil {
+		t.Fatal("expected download error, got nil")
+	}
+
+	// The model directory should NOT exist after the failure.
+	ghostDir := filepath.Join(shelfRoot, "safetensors", "TestPublisher", "TestModel")
+	if _, statErr := os.Stat(ghostDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected ghost directory %q to be cleaned up, but it still exists", ghostDir)
+	}
+}
+
+// rewriteTransport redirects all requests to a local test server.
+type rewriteTransport struct {
+	target    string
+	transport http.RoundTripper
+}
+
+func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = "http"
+	req.URL.Host = t.target[len("http://"):]
+	return t.transport.RoundTrip(req)
 }
