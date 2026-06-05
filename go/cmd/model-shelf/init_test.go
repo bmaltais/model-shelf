@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,15 +18,25 @@ func TestCmdInit_ForceWarnsWhenDaemonRunning(t *testing.T) {
 	t.Setenv("HOME", home)
 	shelfPath := filepath.Join(t.TempDir(), "models")
 
-	// Start a fake daemon on a known port.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"name":"node1"}`))
-	}))
+	// Bind a fake /v1/health server on 127.0.0.1:8844 (DefaultPort).
+	// Skip if the port is unavailable (e.g. real daemon running).
+	ln, err := net.Listen("tcp", "127.0.0.1:8844")
+	if err != nil {
+		t.Skipf("port 8844 unavailable, skipping: %v", err)
+	}
+	server := &httptest.Server{
+		Listener: ln,
+		Config:   &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/health" {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"name":"node1"}`))
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})},
+	}
+	server.Start()
 	defer server.Close()
-
-	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
-	portNum := mustAtoi(t, port)
 
 	// First init to create config.
 	code := cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "node1"})
@@ -33,23 +44,7 @@ func TestCmdInit_ForceWarnsWhenDaemonRunning(t *testing.T) {
 		t.Fatalf("first init failed with code %d", code)
 	}
 
-	// Rewrite config with our test server port so the health check will hit it.
-	cfg := &meshconfig.Config{
-		Name:      "node1",
-		Port:      portNum,
-		Roles:     []string{"controller"},
-		ShelfRoot: shelfPath,
-	}
-	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
-		t.Fatalf("WriteTo failed: %v", err)
-	}
-
-	// Run init --force. It will write port=8844 (DefaultPort), not our server port.
-	// So we need to patch meshconfig.DefaultPort... but can't easily.
-	// Instead, verify the code compiles and runs. The warning path is exercised
-	// when the written config port matches a running daemon.
-	// For a full integration test, this would need the actual daemon.
-
+	// Run init --force — should detect daemon on port 8844 and print warning.
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -59,13 +54,15 @@ func TestCmdInit_ForceWarnsWhenDaemonRunning(t *testing.T) {
 	w.Close()
 	os.Stdout = oldStdout
 	outBytes, _ := io.ReadAll(r)
-	_ = string(outBytes)
+	output := string(outBytes)
 
 	if code != 0 {
-		t.Fatalf("expected exit 0, got %d", code)
+		t.Fatalf("expected exit 0, got %d\noutput: %s", code, output)
 	}
-	// Note: warning won't appear because init writes DefaultPort (8844),
-	// not our test server port. This test verifies the code path doesn't panic.
+
+	if !strings.Contains(output, "daemon is running with old config") {
+		t.Errorf("expected daemon warning, got:\n%s", output)
+	}
 }
 
 func TestCmdInit_RequiresShelf(t *testing.T) {

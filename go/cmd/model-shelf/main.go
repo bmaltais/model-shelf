@@ -354,8 +354,10 @@ func cmdInit(args []string) int {
 		client := &http.Client{Timeout: 2 * time.Second}
 		if resp, err := client.Get(url); err == nil {
 			resp.Body.Close()
-			fmt.Println()
-			fmt.Println("  note: daemon is running with old config — run 'model-shelf service restart' to apply changes")
+			if resp.StatusCode == http.StatusOK {
+				fmt.Println()
+				fmt.Println("  note: daemon is running with old config — run 'model-shelf service restart' to apply changes")
+			}
 		}
 	}
 

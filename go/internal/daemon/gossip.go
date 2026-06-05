@@ -120,8 +120,12 @@ func (g *Gossip) Nodes() []MeshNode {
 		g.mu.Lock()
 		for i := range g.nodes {
 			if g.nodes[i].Name == g.self {
-				g.nodes[i].DiskFreeGB = freeGB
-				g.nodes[i].DiskTotalGB = totalGB
+				// Only update disk metrics if diskUsage returned valid data;
+				// avoids overwriting known values with zeros on transient failures.
+				if totalGB > 0 {
+					g.nodes[i].DiskFreeGB = freeGB
+					g.nodes[i].DiskTotalGB = totalGB
+				}
 				g.nodes[i].UptimeSeconds = time.Since(g.startTime).Seconds()
 				g.nodes[i].LastSeen = &now
 				break
