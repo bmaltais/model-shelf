@@ -32,9 +32,9 @@ func SaveMeshState(nodes []MeshNode) error {
 	return os.Rename(tmp, path)
 }
 
-// loadMeshState loads the node list from disk.
+// LoadMeshState loads the node list from disk.
 // Returns nil (no error) if the file doesn't exist.
-func loadMeshState() ([]MeshNode, error) {
+func LoadMeshState() ([]MeshNode, error) {
 	data, err := os.ReadFile(meshStatePath())
 	if err != nil {
 		if os.IsNotExist(err) {

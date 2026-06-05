@@ -30,7 +30,7 @@ func cmdNodes(args []string) int {
 
 	// Load config to determine daemon port and mesh key.
 	if !meshconfig.Exists() {
-		fmt.Fprintf(os.Stderr, "error: mesh not configured. Run 'model-shelf init' first.\n")
+		fmt.Fprintf(os.Stderr, "error: not part of a mesh — run `model-shelf init` and `model-shelf join`\n")
 		return 1
 	}
 	cfg, err := meshconfig.Load()

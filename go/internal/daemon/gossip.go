@@ -85,7 +85,7 @@ func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime ti
 	}
 
 	// Try to load persisted state.
-	persisted, err := loadMeshState()
+	persisted, err := LoadMeshState()
 	if err != nil {
 		log.Printf("gossip: failed to load persisted state: %v (starting fresh)", err)
 	}
