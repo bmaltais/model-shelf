@@ -76,73 +76,94 @@ Requires Python 3.11+.
 
 ## Configure
 
-Just run:
+Initialize a mesh node:
 
 ```bash
-model-shelf init
+# Controller + store node (generates a mesh key for other nodes to join)
+model-shelf init --role controller,store --shelf /mnt/nas/ai-models
+
+# Store-only node
+model-shelf init --role store --shelf ~/.cache/model-shelf/models
+
+# With a custom node name
+model-shelf init --role store --shelf /data/models --name gpu-box-1
+
+# Overwrite existing config
+model-shelf init --role controller,store --shelf /data/models --force
 ```
 
-What happens depends on what Model Shelf can see:
+**Required flags:**
+- `--role <roles>` — comma-separated list of node roles: `controller`, `store`, `executor`
+- `--shelf <path>` — path to the model storage directory
 
-- **Your external drive already has a `ModelShelf/models/` folder** → it uses that one silently. No prompt, no questions. (Most common: you've used this drive before.)
-- **External drives are connected but none has a shelf yet** → interactive picker (arrow keys) showing each drive plus an internal-storage option and a custom-path escape hatch.
-- **No external drives connected** → falls back to internal storage (`~/.cache/model-shelf/models`) and tells you.
-- **Need explicit control** → `model-shelf init /path/to/shelf` skips detection and uses that path.
+**Optional flags:**
+- `--name <name>` — node name (defaults to hostname)
+- `--force` — overwrite existing config
 
-Whichever path is picked, Model Shelf creates the three format subfolders under it. Downloads then nest by publisher and repo (mirrors Hugging Face Hub, matches LM Studio's layout):
+Init creates the shelf directory structure (gguf/, mlx/, safetensors/ subdirectories) and writes the mesh config to `~/.model-shelf/config.toml`. If the node has the `controller` role, a mesh key is generated automatically.
 
-```
-models/
-├── gguf/
-│   └── Qwen/
-│       └── Qwen3-14B-GGUF/
-│           └── Qwen3-14B-Q4_K_M.gguf
-├── mlx/
-│   └── mlx-community/
-│       └── Qwen3-14B-4bit/
-└── safetensors/
-    └── Qwen/
-        └── Qwen3-14B/
+### Join an existing mesh
+
+After initializing a non-controller node, join the mesh via a controller:
+
+```bash
+model-shelf join ocilab1:8844 --key <mesh-key>
 ```
 
-By default `init` does **not** pin a path in the config — discovery handles drive swaps and renames automatically. Pass an explicit path (`model-shelf init /path/to/shelf`) only when you want to pin a specific location in the config.
+The mesh key is displayed when the controller is initialized. All nodes in the mesh share the same key for authentication.
 
-Switch shelves later by re-running `init`. Override which config file is used with `$MODEL_SHELF_CONFIG` or `--config <path>`. The user-level config (`~/.config/model-shelf/config.toml`) is the only implicit lookup — Model Shelf does not pick up a `./config.toml` from your current directory, so unrelated tools' configs can't accidentally hijack it.
+### Mesh daemon
 
-> If you pass a path under `/Volumes/<name>/` and `<name>` isn't currently mounted, `init` fails with a clear error instead of silently writing to the internal SSD.
+The daemon runs in the background and handles health polling, gossip, and node coordination:
 
-### Multi-shelf lookup
+```bash
+# Install as a system service (auto-starts on login)
+model-shelf service install
 
-Model Shelf treats every shelf it can see locally as fair game when resolving a model. On every `resolve` it checks:
+# Or run in the foreground for debugging
+model-shelf daemon
 
-1. The primary shelf (configured `shelf_root` if pinned, or auto-discovered if not).
-2. Every mounted `/Volumes/*/ModelShelf/models/` directory (any external drive with a shelf).
-3. The internal default at `~/.cache/model-shelf/models` (if it exists).
-
-First hit wins. Downloads on a miss still go to the primary. So you can plug in any drive that has a ModelShelf folder, rename your main drive, or have multiple shelves spread across drives — if the file is local *anywhere*, it's used.
-
-### Pinned vs unpinned config
-
-By default the config doesn't pin a specific path. The user-level config looks like:
-
-```toml
-allow_downloads = true
+# Manage the service
+model-shelf service start
+model-shelf service stop
+model-shelf service status
+model-shelf service uninstall
 ```
 
-That's it — no `shelf_root` line. At runtime Model Shelf auto-discovers a primary (first external `/Volumes/*/ModelShelf/models`, else internal). Swap drives, rename them, plug in a different drive entirely — nothing in the config needs to change.
+### View mesh status
 
-If you *want* to pin a specific path (say, you have two external drives and want downloads to land on a particular one), run `model-shelf init <path>` — that writes `shelf_root` to the config explicitly. Running `model-shelf init` without an argument never pins.
+```bash
+# Human-readable table with status and disk metrics
+model-shelf nodes
+
+# JSON output for scripting (includes disk_total_gb, disk_free_gb, uptime_seconds, last_seen)
+model-shelf nodes --json
+```
 
 ## CLI
 
 ```bash
-# Setup: auto-detects external drives, prompts or auto-picks, writes config + creates dirs.
-model-shelf init
+# Initialize a mesh node (required before anything else)
+model-shelf init --role controller,store --shelf /path/to/models
 
-# Or skip detection and use an explicit path:
-model-shelf init /Volumes/MyDrive/ModelShelf/models
+# Join an existing mesh
+model-shelf join <peer>:<port> --key <mesh-key>
 
-# Search Hugging Face for a loose query — for when you don't know the exact repo id.
+# Start the mesh daemon (background service)
+model-shelf service install    # install + enable + start
+model-shelf service start      # start if already installed
+model-shelf service stop       # stop
+model-shelf service status     # show whether running
+model-shelf service uninstall  # remove
+
+# Run daemon in foreground (debugging)
+model-shelf daemon [--port <N>]
+
+# View mesh nodes (status, disk metrics, last seen)
+model-shelf nodes
+model-shelf nodes --json
+
+# Search Hugging Face for a loose query
 model-shelf find "qwen 3 4b mlx 4-bit" --format mlx --limit 5
 
 # GGUF (format auto-detected; --quant required for gguf)
@@ -228,26 +249,26 @@ A directory-format shelf hit requires the directory to exist **and** contain a `
 
 ## Storage backends
 
-The code is storage-agnostic. Examples of where you might point the two roots:
+The shelf path is set during `init`. Examples:
 
-```toml
+```bash
 # External SSD / Thunderbolt DAS
-shelf_root = "/Volumes/MyDAS/ModelShelf/models"
+model-shelf init --role store --shelf /Volumes/MyDAS/ModelShelf/models
 
 # NAS mount
-shelf_root = "/mnt/nas/ai-models"
+model-shelf init --role store --shelf /mnt/nas/ai-models
 
 # Plain internal folder
-shelf_root = "~/.cache/model-shelf/models"
+model-shelf init --role store --shelf ~/.cache/model-shelf/models
 ```
 
 ## Status
 
-v0.13 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Publisher/repo nested layout** that mirrors the Hugging Face Hub (and matches what LM Studio expects). Config is unpinned by default: `shelf_root` is optional, auto-discovered at runtime from any mounted `/Volumes/*/ModelShelf/models` (else internal). `model-shelf init <path>` pins; `model-shelf init` without an argument does not. Multi-shelf lookup: every `resolve` checks the primary plus every mounted drive with a ModelShelf folder plus the internal default. `model-shelf find <query>` searches Hugging Face for loose natural-language queries. Mount precheck refuses to write if the configured volume isn't mounted.
+v0.14 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), and disk/uptime metrics propagation. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics for scripting.
 
 ### Go version
 
-The Go implementation (`go/`) provides the same CLI commands as the Python version (`resolve`, `init`, `find`, `list`) in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access. Note: the Go version's `init` uses non-interactive auto-detection only (no arrow-key picker); pass an explicit path when multiple drives are available.
+The Go implementation (`go/`) provides the full CLI in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Includes mesh networking (`init`, `join`, `nodes`, `daemon`, `service`), model resolution (`resolve`, `find`, `list`), and gossip-based health propagation. Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
 
 Roadmap: `verify` subcommand, quantized-safetensors variants (AWQ/GPTQ).
 

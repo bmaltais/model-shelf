@@ -16,7 +16,7 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/service"
 )
 
-const version = "0.13.1"
+const version = "0.14.0"
 
 func main() {
 	if len(os.Args) < 2 {
