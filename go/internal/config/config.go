@@ -141,7 +141,11 @@ func loadRaw(path string) (*resolver.Config, error) {
 	}
 	// Check mesh config first — if it exists, use its shelf_root
 	// to avoid creating a legacy config at ~/.config/model-shelf/.
-	if meshCfg, err := loadFromMeshConfig(); err == nil {
+	if meshconfig.Exists() {
+		meshCfg, err := loadFromMeshConfig()
+		if err != nil {
+			return nil, fmt.Errorf("mesh config exists but cannot be loaded: %w", err)
+		}
 		return meshCfg, nil
 	}
 	userCfg := UserConfigPath()
@@ -155,13 +159,10 @@ func loadRaw(path string) (*resolver.Config, error) {
 	return readConfig(bootstrapped)
 }
 
-// loadFromMeshConfig attempts to load resolver config from the mesh config
-// (~/.model-shelf/config.toml). Returns an error if mesh config doesn't exist
-// or has no shelf_root.
+// loadFromMeshConfig loads resolver config from the mesh config
+// (~/.model-shelf/config.toml). Caller must verify meshconfig.Exists() first.
+// Returns an error if the config cannot be parsed or has no shelf_root.
 func loadFromMeshConfig() (*resolver.Config, error) {
-	if !meshconfig.Exists() {
-		return nil, fmt.Errorf("no mesh config")
-	}
 	mc, err := meshconfig.Load()
 	if err != nil {
 		return nil, err

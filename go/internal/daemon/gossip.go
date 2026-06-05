@@ -243,26 +243,28 @@ func (g *Gossip) pollLoop(ctx context.Context) {
 }
 
 func (g *Gossip) pollPeers() {
-	g.mu.RLock()
-	nodes := make([]MeshNode, len(g.nodes))
-	copy(nodes, g.nodes)
-	g.mu.RUnlock()
-
-	// Update self disk metrics.
+	// Update self disk metrics first so it's included in the snapshot.
 	if g.shelfRoot != "" {
 		_, freeGB := diskUsage(g.shelfRoot)
 		g.mu.Lock()
 		for i := range g.nodes {
 			if g.nodes[i].Name == g.self {
-				g.nodes[i].DiskFreeGB = freeGB
+				if g.nodes[i].DiskFreeGB != freeGB {
+					g.nodes[i].DiskFreeGB = freeGB
+				}
 				break
 			}
 		}
 		g.mu.Unlock()
 	}
 
+	g.mu.RLock()
+	nodes := make([]MeshNode, len(g.nodes))
+	copy(nodes, g.nodes)
+	g.mu.RUnlock()
+
 	var changed bool
-	var transitioned []MeshNode // nodes that changed status (for gossip push)
+	var transitioned []MeshNode // nodes that changed status or metrics (for gossip push)
 	for i := range nodes {
 		if nodes[i].Name == g.self {
 			continue
@@ -279,6 +281,17 @@ func (g *Gossip) pollPeers() {
 			if hr.DiskFreeGB > 0 && nodes[i].DiskFreeGB != hr.DiskFreeGB {
 				nodes[i].DiskFreeGB = hr.DiskFreeGB
 				changed = true
+				// Broadcast updated disk metrics if not already in transition list.
+				alreadyTransitioned := false
+				for _, t := range transitioned {
+					if t.Name == nodes[i].Name {
+						alreadyTransitioned = true
+						break
+					}
+				}
+				if !alreadyTransitioned {
+					transitioned = append(transitioned, nodes[i])
+				}
 			}
 		} else {
 			if nodes[i].MissedPolls < offlineThreshold {
@@ -311,7 +324,7 @@ func (g *Gossip) pollPeers() {
 		g.persistLocked()
 		g.mu.Unlock()
 
-		// Push health change events for nodes that transitioned status.
+		// Push health change events for nodes that transitioned status or metrics.
 		for _, node := range transitioned {
 			g.pushEvent(Event{
 				Type:      EventHealthChange,

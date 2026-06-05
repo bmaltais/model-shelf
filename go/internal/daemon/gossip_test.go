@@ -431,3 +431,54 @@ func TestJoinEndpoint_PushesGossipState(t *testing.T) {
 		t.Error("new-store not found in gossip state after join")
 	}
 }
+
+func TestPollPeers_UpdatesDiskFreeGB(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Start a mock peer that returns disk_free_gb in health response.
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"name":"peer","roles":["store"],"port":8844,"disk_total_gb":500.0,"disk_free_gb":312.5,"uptime_seconds":100}`))
+	}))
+	defer mockServer.Close()
+
+	// Parse mock server address.
+	addr := mockServer.Listener.Addr().String()
+	host := "127.0.0.1"
+	var port int
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			fmt.Sscanf(addr[i+1:], "%d", &port)
+			break
+		}
+	}
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "")
+
+	// Add peer as online with no disk info.
+	g.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "peer", Address: host, Port: port, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	// Poll — the mock server returns disk_free_gb=312.5.
+	g.pollPeers()
+
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "peer" {
+			if n.DiskFreeGB != 312.5 {
+				t.Errorf("expected DiskFreeGB=312.5, got %f", n.DiskFreeGB)
+			}
+			return
+		}
+	}
+	t.Error("peer node not found")
+}
