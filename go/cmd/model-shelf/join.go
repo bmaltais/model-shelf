@@ -18,6 +18,15 @@ import (
 
 func cmdJoin(args []string) int {
 	positional, flags := parseFlags(args)
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf join <peer> [--key <mesh-key>]")
+		fmt.Println()
+		fmt.Println("Join an existing mesh.")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --key <key>        Mesh key (prompts if not provided)")
+		return 0
+	}
 	if len(positional) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: model-shelf join <peer> [--key <mesh-key>]\n")
 		return 1

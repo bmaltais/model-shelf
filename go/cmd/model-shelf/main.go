@@ -107,14 +107,17 @@ var booleanFlags = map[string]bool{
 	"json":        true,
 	"no-download": true,
 	"force":       true,
+	"help":        true,
 }
 
-// parseFlags is a minimal flag parser that handles --key value and --flag style args.
+// parseFlags is a minimal flag parser that handles --key value, --flag, and -h style args.
 // Non-boolean flags that are missing their value argument cause a fatal error.
 func parseFlags(args []string) (positional []string, flags map[string]string) {
 	flags = make(map[string]string)
 	for i := 0; i < len(args); i++ {
-		if strings.HasPrefix(args[i], "--") {
+		if args[i] == "-h" {
+			flags["help"] = "true"
+		} else if strings.HasPrefix(args[i], "--") {
 			key := strings.TrimPrefix(args[i], "--")
 			if booleanFlags[key] {
 				flags[key] = "true"
@@ -140,6 +143,19 @@ func loadCfg(configPath string) (*resolver.Config, error) {
 
 func cmdResolve(args []string) int {
 	positional, flags := parseFlags(args)
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--no-download] [--json]")
+		fmt.Println()
+		fmt.Println("Resolve a model to a local path.")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --quant <Q>        Quantization level (required for GGUF)")
+		fmt.Println("  --format <F>       Force format: gguf, mlx, safetensors")
+		fmt.Println("  --no-download      Never download, even on a miss")
+		fmt.Println("  --json             Emit JSON output")
+		fmt.Println("  --config <path>    Override config file path")
+		return 0
+	}
 	if len(positional) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--no-download] [--json]\n")
 		return 1
@@ -204,6 +220,19 @@ func printResultPretty(repoID string, result *resolver.ResolveResult) {
 
 func cmdInit(args []string) int {
 	_, flags := parseFlags(args)
+
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--force]")
+		fmt.Println()
+		fmt.Println("Initialize a mesh node.")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --shelf <path>     Path for model storage (required)")
+		fmt.Println("  --role <roles>     Node roles: controller,store,executor (required)")
+		fmt.Println("  --name <name>      Node name (default: hostname)")
+		fmt.Println("  --force            Overwrite existing config")
+		return 0
+	}
 
 	// --shelf is required.
 	shelfPath := flags["shelf"]
@@ -320,6 +349,17 @@ func cmdInit(args []string) int {
 
 func cmdFind(args []string) int {
 	positional, flags := parseFlags(args)
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf find <query> [--format F] [--limit N] [--json]")
+		fmt.Println()
+		fmt.Println("Search Hugging Face for models.")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --format <F>       Filter results by format")
+		fmt.Println("  --limit <N>        Max results (default: 10)")
+		fmt.Println("  --json             Emit JSON output")
+		return 0
+	}
 	if len(positional) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: model-shelf find <query> [--format F] [--limit N] [--json]\n")
 		return 1
@@ -364,6 +404,13 @@ func cmdFind(args []string) int {
 
 func cmdList(args []string) int {
 	_, flags := parseFlags(args)
+
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf list [--config <path>]")
+		fmt.Println()
+		fmt.Println("List shelf contents.")
+		return 0
+	}
 
 	cfg, err := loadCfg(flags["config"])
 	if err != nil {
@@ -445,6 +492,16 @@ func fmtSize(n int64) string {
 func cmdDaemon(args []string) int {
 	_, flags := parseFlags(args)
 
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf daemon [--port <N>]")
+		fmt.Println()
+		fmt.Println("Start the mesh daemon (foreground).")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --port <N>         Override listen port (default: 8844)")
+		return 0
+	}
+
 	// Load mesh config.
 	if !meshconfig.Exists() {
 		fmt.Fprintf(os.Stderr, "error: mesh not configured. Create %s with node name, roles, and shelf_root.\n", meshconfig.ConfigPath())
@@ -481,9 +538,21 @@ func cmdDaemon(args []string) int {
 }
 
 func cmdService(args []string) int {
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "usage: model-shelf service <install|uninstall|start|stop|status>\n")
-		return 1
+	if len(args) < 1 || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println("Usage: model-shelf service <install|uninstall|start|stop|status>")
+		fmt.Println()
+		fmt.Println("Manage the system service.")
+		fmt.Println()
+		fmt.Println("Actions:")
+		fmt.Println("  install     Install and enable the service (auto-starts on login)")
+		fmt.Println("  uninstall   Stop and remove the service")
+		fmt.Println("  start       Start the service")
+		fmt.Println("  stop        Stop the service")
+		fmt.Println("  status      Show whether the service is running")
+		if len(args) < 1 {
+			return 1
+		}
+		return 0
 	}
 
 	action := args[0]
