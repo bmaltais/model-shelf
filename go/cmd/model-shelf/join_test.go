@@ -77,6 +77,31 @@ func TestCmdJoin_Success(t *testing.T) {
 	if len(updatedCfg.Seeds) != 1 || updatedCfg.Seeds[0] != peerAddr {
 		t.Errorf("expected seed %q, got %v", peerAddr, updatedCfg.Seeds)
 	}
+
+	// Verify mesh state was persisted.
+	statePath := filepath.Join(home, ".model-shelf", "state", "mesh.json")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("mesh.json not written: %v", err)
+	}
+	var nodes []daemon.MeshNode
+	if err := json.Unmarshal(stateData, &nodes); err != nil {
+		t.Fatalf("invalid mesh.json: %v", err)
+	}
+	// Should contain self + the controller node from the peer response.
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes in mesh.json, got %d: %+v", len(nodes), nodes)
+	}
+	names := map[string]bool{}
+	for _, n := range nodes {
+		names[n.Name] = true
+	}
+	if !names["joining-node"] {
+		t.Errorf("mesh.json missing self (joining-node): %+v", nodes)
+	}
+	if !names["controller"] {
+		t.Errorf("mesh.json missing peer (controller): %+v", nodes)
+	}
 }
 
 func TestCmdJoin_RequiresPeer(t *testing.T) {

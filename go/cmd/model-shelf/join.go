@@ -109,6 +109,30 @@ func cmdJoin(args []string) int {
 		return 1
 	}
 
+	// Persist received mesh state so the daemon has full mesh knowledge on (re)start.
+	// Build node list: self + all nodes returned by the peer.
+	meshNodes := []daemon.MeshNode{
+		{
+			Name:    cfg.Name,
+			Address: meshconfig.GetHostname(),
+			Port:    cfg.Port,
+			Roles:   cfg.Roles,
+			Status:  daemon.StatusOnline,
+		},
+	}
+	for _, n := range joinResp.Nodes {
+		meshNodes = append(meshNodes, daemon.MeshNode{
+			Name:    n.Name,
+			Address: n.Address,
+			Port:    n.Port,
+			Roles:   n.Roles,
+			Status:  daemon.StatusOnline,
+		})
+	}
+	if err := daemon.SaveMeshState(meshNodes); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to persist mesh state: %v\n", err)
+	}
+
 	fmt.Printf("model-shelf: joined mesh via %s\n", peerAddr)
 	fmt.Printf("model-shelf: stored mesh key at %s\n", meshconfig.MeshKeyPath())
 	if len(joinResp.Nodes) > 0 {
