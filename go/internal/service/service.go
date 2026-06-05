@@ -48,6 +48,14 @@ func Stop() error {
 	return stop()
 }
 
+// Restart stops and starts the service.
+func Restart() error {
+	if err := stop(); err != nil {
+		return err
+	}
+	return start()
+}
+
 // GetStatus returns the current service status.
 func GetStatus() (*Status, error) {
 	return getStatus()

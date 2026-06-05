@@ -77,7 +77,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 		DiskTotalGB: totalGB,
 		LastSeen:    &now,
 	}
-	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot)
+	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot, d.startTime)
 	return d
 }
 

@@ -33,10 +33,10 @@ type MeshNode struct {
 	Roles         []string   `json:"roles"`
 	Status        NodeStatus `json:"status"`
 	MissedPolls   int        `json:"missed_polls,omitempty"`
-	DiskFreeGB    float64    `json:"disk_free_gb,omitempty"`
-	DiskTotalGB   float64    `json:"disk_total_gb,omitempty"`
-	UptimeSeconds float64    `json:"uptime_seconds,omitempty"`
-	LastSeen      *time.Time `json:"last_seen,omitempty"`
+	DiskFreeGB    float64    `json:"disk_free_gb"`
+	DiskTotalGB   float64    `json:"disk_total_gb"`
+	UptimeSeconds float64    `json:"uptime_seconds"`
+	LastSeen      *time.Time `json:"last_seen"`
 }
 
 // EventType describes what happened.
@@ -71,15 +71,17 @@ type Gossip struct {
 	self      string // this node's name
 	shelfRoot string // for self disk usage updates
 	meshKey   string
+	startTime time.Time // daemon start time for uptime calculation
 	cancel    context.CancelFunc
 }
 
 // NewGossip creates a gossip instance, loading persisted state if available.
-func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string) *Gossip {
+func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime time.Time) *Gossip {
 	g := &Gossip{
 		self:      selfNode.Name,
 		shelfRoot: shelfRoot,
 		meshKey:   meshKey,
+		startTime: startTime,
 	}
 
 	// Try to load persisted state.
@@ -109,8 +111,25 @@ func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string) *Gossip {
 	return g
 }
 
-// Nodes returns a copy of the current mesh state.
+// Nodes returns a copy of the current mesh state with fresh self-node metrics.
 func (g *Gossip) Nodes() []MeshNode {
+	// Refresh self-node metrics so callers always get current disk/uptime.
+	if g.shelfRoot != "" {
+		totalGB, freeGB := diskUsage(g.shelfRoot)
+		now := time.Now()
+		g.mu.Lock()
+		for i := range g.nodes {
+			if g.nodes[i].Name == g.self {
+				g.nodes[i].DiskFreeGB = freeGB
+				g.nodes[i].DiskTotalGB = totalGB
+				g.nodes[i].UptimeSeconds = time.Since(g.startTime).Seconds()
+				g.nodes[i].LastSeen = &now
+				break
+			}
+		}
+		g.mu.Unlock()
+	}
+
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	out := make([]MeshNode, len(g.nodes))

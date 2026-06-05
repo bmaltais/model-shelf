@@ -239,7 +239,7 @@ func TestGossipStatePersistence(t *testing.T) {
 		Status:  StatusOnline,
 	}
 
-	g := NewGossip(selfNode, "key123", "")
+	g := NewGossip(selfNode, "key123", "", time.Now())
 
 	// Add a peer node.
 	g.ApplyEvent(Event{
@@ -264,7 +264,7 @@ func TestGossipStatePersistence(t *testing.T) {
 	}
 
 	// Create a new gossip instance — it should load persisted state.
-	g2 := NewGossip(selfNode, "key123", "")
+	g2 := NewGossip(selfNode, "key123", "", time.Now())
 	nodes := g2.Nodes()
 	if len(nodes) != 2 {
 		t.Fatalf("expected 2 nodes after reload, got %d", len(nodes))
@@ -282,7 +282,7 @@ func TestGossipNodeOfflineAfterMissedPolls(t *testing.T) {
 		Status:  StatusOnline,
 	}
 
-	g := NewGossip(selfNode, "", "")
+	g := NewGossip(selfNode, "", "", time.Now())
 
 	// Start a mock server that always returns 503 (unhealthy).
 	unhealthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -358,7 +358,7 @@ func TestGossipNodeComesBackOnline(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "")
+	g := NewGossip(selfNode, "", "", time.Now())
 
 	// Add peer as offline.
 	g.mu.Lock()
@@ -460,7 +460,7 @@ func TestPollPeers_UpdatesDiskFreeGB(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "")
+	g := NewGossip(selfNode, "", "", time.Now())
 
 	// Add peer as online with no disk info.
 	g.ApplyEvent(Event{
