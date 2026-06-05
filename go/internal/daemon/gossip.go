@@ -33,6 +33,7 @@ type MeshNode struct {
 	Roles       []string   `json:"roles"`
 	Status      NodeStatus `json:"status"`
 	MissedPolls int        `json:"missed_polls,omitempty"`
+	DiskFreeGB  float64    `json:"disk_free_gb,omitempty"`
 }
 
 // EventType describes what happened.
@@ -62,18 +63,20 @@ type Event struct {
 
 // Gossip manages mesh state replication.
 type Gossip struct {
-	mu      sync.RWMutex
-	nodes   []MeshNode
-	self    string // this node's name
-	meshKey string
-	cancel  context.CancelFunc
+	mu        sync.RWMutex
+	nodes     []MeshNode
+	self      string // this node's name
+	shelfRoot string // for self disk usage updates
+	meshKey   string
+	cancel    context.CancelFunc
 }
 
 // NewGossip creates a gossip instance, loading persisted state if available.
-func NewGossip(selfNode MeshNode, meshKey string) *Gossip {
+func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string) *Gossip {
 	g := &Gossip{
-		self:    selfNode.Name,
-		meshKey: meshKey,
+		self:      selfNode.Name,
+		shelfRoot: shelfRoot,
+		meshKey:   meshKey,
 	}
 
 	// Try to load persisted state.
@@ -245,19 +248,37 @@ func (g *Gossip) pollPeers() {
 	copy(nodes, g.nodes)
 	g.mu.RUnlock()
 
+	// Update self disk metrics.
+	if g.shelfRoot != "" {
+		_, freeGB := diskUsage(g.shelfRoot)
+		g.mu.Lock()
+		for i := range g.nodes {
+			if g.nodes[i].Name == g.self {
+				g.nodes[i].DiskFreeGB = freeGB
+				break
+			}
+		}
+		g.mu.Unlock()
+	}
+
 	var changed bool
 	var transitioned []MeshNode // nodes that changed status (for gossip push)
 	for i := range nodes {
 		if nodes[i].Name == g.self {
 			continue
 		}
-		if g.checkHealth(nodes[i]) {
+		hr := g.checkHealth(nodes[i])
+		if hr.OK {
 			if nodes[i].Status == StatusOffline || nodes[i].MissedPolls > 0 {
 				nodes[i].Status = StatusOnline
 				nodes[i].MissedPolls = 0
 				changed = true
 				transitioned = append(transitioned, nodes[i])
 				log.Printf("gossip: node %q is back online", nodes[i].Name)
+			}
+			if hr.DiskFreeGB > 0 && nodes[i].DiskFreeGB != hr.DiskFreeGB {
+				nodes[i].DiskFreeGB = hr.DiskFreeGB
+				changed = true
 			}
 		} else {
 			if nodes[i].MissedPolls < offlineThreshold {
@@ -280,6 +301,7 @@ func (g *Gossip) pollPeers() {
 				if g.nodes[j].Name == updated.Name {
 					g.nodes[j].Status = updated.Status
 					g.nodes[j].MissedPolls = updated.MissedPolls
+					g.nodes[j].DiskFreeGB = updated.DiskFreeGB
 					break
 				}
 			}
@@ -300,22 +322,37 @@ func (g *Gossip) pollPeers() {
 	}
 }
 
-func (g *Gossip) checkHealth(node MeshNode) bool {
+// healthResult holds the outcome of a health check.
+type healthResult struct {
+	OK         bool
+	DiskFreeGB float64
+}
+
+func (g *Gossip) checkHealth(node MeshNode) healthResult {
 	url := fmt.Sprintf("http://%s:%d/v1/health", node.Address, node.Port)
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return false
+		return healthResult{}
 	}
 	if g.meshKey != "" {
 		req.Header.Set("Authorization", "Bearer "+g.meshKey)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return healthResult{}
 	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return healthResult{}
+	}
+	var hr struct {
+		DiskFreeGB float64 `json:"disk_free_gb"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
+		return healthResult{OK: true}
+	}
+	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB}
 }
 
 func (g *Gossip) pushEvent(ev Event, nodes []MeshNode) {
