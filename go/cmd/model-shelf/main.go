@@ -4,9 +4,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/config"
 	"github.com/alexziskind1/model-shelf/internal/daemon"
@@ -98,6 +100,7 @@ Service actions:
   uninstall          Stop and remove the service
   start              Start the service
   stop               Stop the service
+  restart            Restart the service (stop + start)
   status             Show whether the service is running
 `, version)
 }
@@ -344,6 +347,20 @@ func cmdInit(args []string) int {
 			fmt.Printf("  + %s\n", p)
 		}
 	}
+
+	// If the daemon is running and we overwrote config, warn about restart.
+	if force {
+		url := fmt.Sprintf("http://127.0.0.1:%d/v1/health", meshCfg.Port)
+		client := &http.Client{Timeout: 2 * time.Second}
+		if resp, err := client.Get(url); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				fmt.Println()
+				fmt.Println("  note: daemon is running with old config — run 'model-shelf service restart' to apply changes")
+			}
+		}
+	}
+
 	return 0
 }
 
@@ -539,7 +556,7 @@ func cmdDaemon(args []string) int {
 
 func cmdService(args []string) int {
 	if len(args) < 1 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Println("Usage: model-shelf service <install|uninstall|start|stop|status>")
+		fmt.Println("Usage: model-shelf service <install|uninstall|start|stop|restart|status>")
 		fmt.Println()
 		fmt.Println("Manage the system service.")
 		fmt.Println()
@@ -548,6 +565,7 @@ func cmdService(args []string) int {
 		fmt.Println("  uninstall   Stop and remove the service")
 		fmt.Println("  start       Start the service")
 		fmt.Println("  stop        Stop the service")
+		fmt.Println("  restart     Restart the service (stop + start)")
 		fmt.Println("  status      Show whether the service is running")
 		if len(args) < 1 {
 			return 1
@@ -581,6 +599,12 @@ func cmdService(args []string) int {
 			return 1
 		}
 		fmt.Println("model-shelf: service stopped")
+	case "restart":
+		if err := service.Restart(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Println("model-shelf: service restarted")
 	case "status":
 		status, err := service.GetStatus()
 		if err != nil {
@@ -593,7 +617,7 @@ func cmdService(args []string) int {
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown service action: %s\n", action)
-		fmt.Fprintf(os.Stderr, "usage: model-shelf service <install|uninstall|start|stop|status>\n")
+		fmt.Fprintf(os.Stderr, "usage: model-shelf service <install|uninstall|start|stop|restart|status>\n")
 		return 1
 	}
 	return 0

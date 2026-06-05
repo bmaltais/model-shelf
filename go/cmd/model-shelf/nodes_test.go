@@ -192,6 +192,65 @@ func TestCmdNodes_NoConfig(t *testing.T) {
 	}
 }
 
+func TestCmdNodes_JSON_AlwaysIncludesDiskFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Node with zero disk metrics — fields should still be present in JSON.
+	nodes := []daemon.MeshNode{
+		{Name: "fresh", Address: "10.0.0.1", Port: 8844, Roles: []string{"store"}, Status: daemon.StatusOnline},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer server.Close()
+
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	cfg := &meshconfig.Config{
+		Name:      "fresh",
+		Port:      mustAtoi(t, port),
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdNodes([]string{"--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// Fields must be present even when zero/null (not omitted).
+	if !strings.Contains(output, `"disk_free_gb"`) {
+		t.Errorf("expected disk_free_gb field in JSON output, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"disk_total_gb"`) {
+		t.Errorf("expected disk_total_gb field in JSON output, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"uptime_seconds"`) {
+		t.Errorf("expected uptime_seconds field in JSON output, got:\n%s", output)
+	}
+	if !strings.Contains(output, `"last_seen"`) {
+		t.Errorf("expected last_seen field in JSON output, got:\n%s", output)
+	}
+}
+
 func mustAtoi(t *testing.T, s string) int {
 	t.Helper()
 	var n int

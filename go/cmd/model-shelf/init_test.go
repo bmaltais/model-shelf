@@ -2,6 +2,9 @@ package main
 
 import (
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,58 @@ import (
 
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
+
+func TestCmdInit_ForceWarnsWhenDaemonRunning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// Bind a fake /v1/health server on 127.0.0.1:8844 (DefaultPort).
+	// Skip if the port is unavailable (e.g. real daemon running).
+	ln, err := net.Listen("tcp", "127.0.0.1:8844")
+	if err != nil {
+		t.Skipf("port 8844 unavailable, skipping: %v", err)
+	}
+	server := &httptest.Server{
+		Listener: ln,
+		Config:   &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/health" {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"name":"node1"}`))
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})},
+	}
+	server.Start()
+	defer server.Close()
+
+	// First init to create config.
+	code := cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "node1"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Run init --force — should detect daemon on port 8844 and print warning.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code = cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "node1", "--force"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+	output := string(outBytes)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput: %s", code, output)
+	}
+
+	if !strings.Contains(output, "daemon is running with old config") {
+		t.Errorf("expected daemon warning, got:\n%s", output)
+	}
+}
 
 func TestCmdInit_RequiresShelf(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
