@@ -120,14 +120,13 @@ func LoadConfig(path string) (*resolver.Config, error) {
 
 func loadRaw(path string) (*resolver.Config, error) {
 	if path != "" {
-		if _, err := os.Stat(path); err == nil {
-			return readConfig(path)
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("config file not found: %s", path)
+			}
+			return nil, fmt.Errorf("cannot access config file %s: %w", path, err)
 		}
-		bootstrapped, err := BootstrapDefaultConfig(path)
-		if err != nil {
-			return nil, err
-		}
-		return readConfig(bootstrapped)
+		return readConfig(path)
 	}
 	if env := os.Getenv("MODEL_SHELF_CONFIG"); env != "" {
 		if _, err := os.Stat(env); err == nil {

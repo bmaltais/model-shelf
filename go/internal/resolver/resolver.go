@@ -105,12 +105,14 @@ func DetectFormat(repoID string) string {
 }
 
 // splitRepoID splits "publisher/repo" into its parts.
+// It requires exactly one slash — both bare names and paths with extra
+// segments (e.g. "too/many/slashes") are rejected.
 func splitRepoID(repoID string) (string, string, error) {
-	idx := strings.Index(repoID, "/")
-	if idx < 0 {
+	parts := strings.Split(repoID, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("repo_id must be in 'publisher/repo' format (e.g. Qwen/Qwen3-14B-GGUF), got: %q", repoID)
 	}
-	return repoID[:idx], repoID[idx+1:], nil
+	return parts[0], parts[1], nil
 }
 
 // HFFilename returns the expected filename in a Hugging Face GGUF repo.

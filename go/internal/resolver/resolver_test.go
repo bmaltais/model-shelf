@@ -81,6 +81,26 @@ func TestSplitRepoIDError(t *testing.T) {
 	}
 }
 
+func TestSplitRepoID_TooManySlashes(t *testing.T) {
+	_, _, err := splitRepoID("too/many/slashes")
+	if err == nil {
+		t.Fatal("expected error for repo_id with multiple slashes")
+	}
+	if !strings.Contains(err.Error(), "publisher/repo") {
+		t.Errorf("error should mention expected format, got: %s", err.Error())
+	}
+}
+
+func TestSplitRepoID_Valid(t *testing.T) {
+	pub, repo, err := splitRepoID("Qwen/Qwen3-14B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub != "Qwen" || repo != "Qwen3-14B" {
+		t.Errorf("got %q/%q, want Qwen/Qwen3-14B", pub, repo)
+	}
+}
+
 func TestCleanupOnFailure(t *testing.T) {
 	t.Run("removes new directory", func(t *testing.T) {
 		tmp := t.TempDir()
