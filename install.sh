@@ -64,15 +64,31 @@ chmod +x "${TARGET}"
 VERSION=$("${TARGET}" version 2>/dev/null) && echo "Installed: $VERSION" \
   || echo "warning: installed binary but could not verify (may need different platform)" >&2
 
-# Check PATH
+# Ensure PATH includes INSTALL_DIR for non-interactive sessions (e.g. SSH).
+# We append to ~/.profile which is sourced by login shells (including non-interactive SSH).
+PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+PROFILE="$HOME/.profile"
+
+add_to_profile() {
+  if [ -f "$PROFILE" ] && grep -qF "$INSTALL_DIR" "$PROFILE" 2>/dev/null; then
+    return 0
+  fi
+  echo "" >> "$PROFILE"
+  echo "# Added by model-shelf installer" >> "$PROFILE"
+  echo "$PATH_LINE" >> "$PROFILE"
+  echo "Updated ${PROFILE} with PATH entry."
+}
+
 case ":$PATH:" in
-  *":${INSTALL_DIR}:"*) ;;
+  *":${INSTALL_DIR}:"*)
+    # Already on PATH in this session; ensure ~/.profile has it for non-interactive shells.
+    add_to_profile
+    ;;
   *)
+    add_to_profile
     echo ""
-    echo "⚠ ${INSTALL_DIR} is not on your PATH."
-    echo "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-    echo ""
-    echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+    echo "ℹ ${INSTALL_DIR} has been added to ${PROFILE}."
+    echo "  Run 'source ${PROFILE}' or start a new login shell to activate."
     echo ""
     ;;
 esac
