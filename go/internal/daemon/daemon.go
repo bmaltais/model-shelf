@@ -157,9 +157,13 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get existing nodes from gossip state (before adding the new one).
+	// Filter out the joining node itself — it doesn't need to bootstrap itself.
 	gossipNodes := d.gossip.Nodes()
 	existingNodes := make([]NodeInfo, 0, len(gossipNodes))
 	for _, n := range gossipNodes {
+		if n.Name == req.Name {
+			continue
+		}
 		existingNodes = append(existingNodes, NodeInfo{
 			Name:    n.Name,
 			Address: n.Address,
