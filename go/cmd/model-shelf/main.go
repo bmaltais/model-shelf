@@ -36,6 +36,8 @@ func main() {
 		os.Exit(cmdList(os.Args[2:]))
 	case "daemon":
 		os.Exit(cmdDaemon(os.Args[2:]))
+	case "join":
+		os.Exit(cmdJoin(os.Args[2:]))
 	case "service":
 		os.Exit(cmdService(os.Args[2:]))
 	case "version", "--version", "-v":
@@ -56,12 +58,16 @@ func printUsage() {
 
 Usage:
   model-shelf init --role <roles> --shelf <path>  Initialize mesh node
+  model-shelf join <peer> [--key <mesh-key>]      Join an existing mesh
   model-shelf resolve <repo_id>        Resolve a model to a local path
   model-shelf find <query>             Search Hugging Face for models
   model-shelf list                     List shelf contents
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
   model-shelf version                  Print version
+
+Join flags:
+  --key <key>        Mesh key (prompts if not provided)
 
 Resolve flags:
   --quant <Q>        Quantization level (required for GGUF)
