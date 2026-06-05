@@ -13,6 +13,7 @@ import (
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
+	"github.com/alexziskind1/model-shelf/internal/service"
 )
 
 func cmdJoin(args []string) int {
@@ -114,6 +115,18 @@ func cmdJoin(args []string) int {
 		fmt.Printf("model-shelf: received %d node(s) from mesh:\n", len(joinResp.Nodes))
 		for _, n := range joinResp.Nodes {
 			fmt.Printf("  - %s (roles: %s, port: %d)\n", n.Name, strings.Join(n.Roles, ","), n.Port)
+		}
+	}
+
+	// Restart the daemon if running so it picks up the new mesh key.
+	status, err := service.GetStatus()
+	if err == nil && status.Running {
+		if err := service.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to stop daemon: %v\n", err)
+		} else if err := service.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to restart daemon: %v\n", err)
+		} else {
+			fmt.Printf("model-shelf: restarted daemon with new mesh key\n")
 		}
 	}
 
