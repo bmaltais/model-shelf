@@ -280,6 +280,11 @@ func InitShelf(cfg *Config) ([]string, error) {
 		}
 	}
 
+	// Check that no ancestor of the shelf path is a regular file.
+	if err := checkPathAncestors(cfg.ShelfRoot); err != nil {
+		return nil, err
+	}
+
 	var created []string
 	dirs := []string{cfg.ShelfRoot}
 	for _, fmt := range SupportedFormats {
@@ -294,6 +299,39 @@ func InitShelf(cfg *Config) ([]string, error) {
 		}
 	}
 	return created, nil
+}
+
+// checkPathAncestors walks from root toward the target path, checking for
+// regular files that would block directory creation. Returns an actionable
+// error if a file is found at any component.
+func checkPathAncestors(target string) error {
+	clean := filepath.Clean(target)
+	// Walk each component from the root toward the target.
+	dir := clean
+	var components []string
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		components = append([]string{dir}, components...)
+		dir = parent
+	}
+	for _, component := range components {
+		info, err := os.Stat(component)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Doesn't exist yet — ancestors above were fine, mkdir will work.
+				return nil
+			}
+			// Permission error or other real problem — surface it.
+			return fmt.Errorf("cannot create shelf at %s: stat %s: %w", target, component, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("cannot create shelf at %s: %s exists but is not a directory", target, component)
+		}
+	}
+	return nil
 }
 
 // ResolveModel resolves a model to a local path, optionally downloading it.
@@ -505,6 +543,9 @@ func downloadFile(url, dest string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == 401 {
+		return clarify401(url)
+	}
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
 	}
@@ -516,4 +557,52 @@ func downloadFile(url, dest string) error {
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+// clarify401 distinguishes "repo not found" from "repo requires authentication"
+// by probing the HF models API endpoint for the repo.
+func clarify401(fileURL string) error {
+	// Extract repo ID from URL like https://huggingface.co/<owner>/<repo>/resolve/main/<file>
+	repoID := extractRepoID(fileURL)
+	if repoID == "" {
+		return fmt.Errorf("HTTP 401 for %s", fileURL)
+	}
+
+	// HEAD the models API — HF returns 404 for truly nonexistent repos,
+	// 200 or 401/403 for repos that exist but require auth.
+	checkURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
+	headReq, err := http.NewRequest("HEAD", checkURL, nil)
+	if err != nil {
+		return fmt.Errorf("HTTP 401 for %s", fileURL)
+	}
+	headResp, err := http.DefaultClient.Do(headReq)
+	if err != nil {
+		return fmt.Errorf("HTTP 401 for %s", fileURL)
+	}
+	headResp.Body.Close()
+
+	switch headResp.StatusCode {
+	case 404:
+		return fmt.Errorf("repository %q not found on Hugging Face", repoID)
+	case 200, 401, 403:
+		return fmt.Errorf("repository %q requires authentication — set HF_TOKEN", repoID)
+	default:
+		// Unexpected status (429, 5xx, etc.) — fall back to original context.
+		return fmt.Errorf("HTTP 401 for %s (probe returned %d)", fileURL, headResp.StatusCode)
+	}
+}
+
+// extractRepoID extracts "owner/repo" from a HuggingFace file URL.
+func extractRepoID(url string) string {
+	// URL format: https://huggingface.co/<owner>/<repo>/resolve/main/<file>
+	const prefix = "https://huggingface.co/"
+	if !strings.HasPrefix(url, prefix) {
+		return ""
+	}
+	path := strings.TrimPrefix(url, prefix)
+	parts := strings.SplitN(path, "/", 4)
+	if len(parts) < 3 {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
