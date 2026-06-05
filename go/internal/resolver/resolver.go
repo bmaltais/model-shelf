@@ -355,12 +355,15 @@ func resolveGGUF(cfg *Config, repoID, quant string) (*ResolveResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+	dir := filepath.Dir(finalPath)
+	dirExisted := dirExists(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	hfName := HFFilename(repoID, quant)
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, hfName)
 	if err := downloadFile(url, finalPath); err != nil {
+		cleanupOnFailure(dir, dirExisted)
 		return nil, fmt.Errorf("download failed: %w", err)
 	}
 
@@ -393,14 +396,32 @@ func resolveSnapshot(cfg *Config, repoID, format string) (*ResolveResult, error)
 	if err != nil {
 		return nil, err
 	}
+	dirExisted := dirExists(finalPath)
 	if err := os.MkdirAll(finalPath, 0o755); err != nil {
 		return nil, err
 	}
 	if err := downloadSnapshot(repoID, finalPath, format); err != nil {
+		cleanupOnFailure(finalPath, dirExisted)
 		return nil, fmt.Errorf("snapshot download failed: %w", err)
 	}
 
 	return &ResolveResult{Status: "downloaded", Source: "huggingface", Format: format, Path: &finalPath, Checks: checks}, nil
+}
+
+// dirExists reports whether path exists and is a directory.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// cleanupOnFailure removes a directory tree that was created for a download
+// that subsequently failed. If the directory existed before the download
+// attempt, it is left untouched.
+func cleanupOnFailure(dir string, existedBefore bool) {
+	if existedBefore {
+		return
+	}
+	_ = os.RemoveAll(dir)
 }
 
 // hfRepoFile represents a file entry from the HF API.

@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -74,5 +75,41 @@ func TestSplitRepoIDError(t *testing.T) {
 	_, _, err := splitRepoID("no-slash")
 	if err == nil {
 		t.Error("expected error for repo_id without slash")
+	}
+}
+
+func TestCleanupOnFailure(t *testing.T) {
+	t.Run("removes new directory", func(t *testing.T) {
+		tmp := t.TempDir()
+		dir := filepath.Join(tmp, "publisher", "repo")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cleanupOnFailure(dir, false)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Error("expected directory to be removed")
+		}
+	})
+
+	t.Run("preserves pre-existing directory", func(t *testing.T) {
+		tmp := t.TempDir()
+		dir := filepath.Join(tmp, "existing")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cleanupOnFailure(dir, true)
+		if _, err := os.Stat(dir); err != nil {
+			t.Error("expected directory to still exist")
+		}
+	})
+}
+
+func TestDirExists(t *testing.T) {
+	tmp := t.TempDir()
+	if !dirExists(tmp) {
+		t.Error("expected true for existing directory")
+	}
+	if dirExists(filepath.Join(tmp, "nonexistent")) {
+		t.Error("expected false for nonexistent path")
 	}
 }

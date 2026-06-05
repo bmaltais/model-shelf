@@ -493,7 +493,7 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
-		fmt.Println("model-shelf: service installed and enabled (auto-starts on login)")
+		fmt.Println("model-shelf: service installed, enabled, and started")
 	case "uninstall":
 		if err := service.Uninstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
