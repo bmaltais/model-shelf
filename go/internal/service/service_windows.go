@@ -18,7 +18,6 @@ func install(exePath string) error {
 		"binPath=", binPath,
 		"DisplayName=", serviceDisplayName,
 		"start=", "auto",
-		"obj=", "NT AUTHORITY\\NetworkService",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("sc create: %s (%w)", strings.TrimSpace(string(out)), err)

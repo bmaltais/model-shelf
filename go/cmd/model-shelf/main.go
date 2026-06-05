@@ -85,7 +85,7 @@ Init flags:
   --force            Overwrite existing config
 
 Service actions:
-  install            Install and enable the service (auto-starts on boot)
+  install            Install and enable the service (auto-starts on login)
   uninstall          Stop and remove the service
   start              Start the service
   stop               Stop the service
@@ -479,7 +479,7 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
-		fmt.Println("model-shelf: service installed and enabled (auto-starts on boot)")
+		fmt.Println("model-shelf: service installed and enabled (auto-starts on login)")
 	case "uninstall":
 		if err := service.Uninstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

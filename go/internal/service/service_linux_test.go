@@ -12,8 +12,8 @@ import (
 func TestUnitContent(t *testing.T) {
 	content := unitContent("/usr/local/bin/model-shelf")
 
-	if !strings.Contains(content, "ExecStart=/usr/local/bin/model-shelf daemon") {
-		t.Error("unit file should contain ExecStart with daemon command")
+	if !strings.Contains(content, `ExecStart="/usr/local/bin/model-shelf" daemon`) {
+		t.Error("unit file should contain ExecStart with quoted path and daemon command")
 	}
 	if !strings.Contains(content, "[Unit]") {
 		t.Error("unit file should contain [Unit] section")

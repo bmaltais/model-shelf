@@ -63,7 +63,7 @@ func install(exePath string) error {
 		return fmt.Errorf("writing plist file: %w", err)
 	}
 
-	// Load the service (enables and starts on boot).
+	// Load the service (enables and starts on user login).
 	if err := launchctl("load", "-w", plistPath()); err != nil {
 		return fmt.Errorf("launchctl load: %w", err)
 	}
