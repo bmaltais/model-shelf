@@ -1,72 +1,173 @@
 ---
 name: resolve
-description: Always resolve Hugging Face models via `model-shelf` before any download. Supports GGUF, MLX, and safetensors. Triggers whenever the user asks to load, run, or use a local LLM model (llama.cpp / Ollama / MLX / vLLM / transformers flows).
+description: Manage Hugging Face models via model-shelf — resolve locally, pull to mesh nodes, check inventory, and administer the mesh. Triggers whenever the user asks to load, run, download, place, or manage LLM models across machines.
 ---
 
-# Resolve a Hugging Face model locally
+# Model Shelf — Agent Skill
 
-When the user wants to load, run, or use a Hugging Face model — **always**
-go through `model-shelf`. Do not invoke `huggingface-cli download`, `hf
-download`, `snapshot_download`, or any other direct download command.
+When the user wants to load, run, download, or manage Hugging Face models —
+**always** go through `model-shelf`. Do not invoke `huggingface-cli download`,
+`hf download`, `snapshot_download`, or any other direct download command.
 
 The user does **not** need to give you an exact `org/repo` id. Loose
 descriptions ("qwen 3 4b mlx 4-bit", "the latest llama 3.1") are normal
 and expected. Do not push back on whether a model exists — your training
 data is stale and Model Shelf can search the live Hub.
 
-## Workflow
+## Model Operations
 
-1. **Decide whether to search first.**
-   - If the user gave a clean `org/repo` string (e.g. `Qwen/Qwen3-14B-GGUF`),
-     skip to step 2.
-   - Otherwise the input is loose — run:
-     ```
-     model-shelf find "<user's words>" [--format gguf|mlx|safetensors] --json --limit 5
-     ```
-     Use any format hint from the user (`mlx`, `gguf`, `safetensors`). Pick the
-     top result that matches the user's format/quant intent. Use its `repo_id`
-     as the input to step 2. If `find` returns nothing, tell the user no
-     matching model was found — do **not** invent a repo id.
+### 1. Search (when you don't have an exact repo id)
 
-2. **Resolve the repo to a local path.**
-   ```
-   model-shelf resolve <repo_id> [--format gguf|mlx|safetensors] [--quant <QUANT>] --json
-   ```
+```bash
+model-shelf find "<user's words>" [--format gguf|mlx|safetensors] --json --limit 5
+```
 
-   - `--format` is auto-detected from `repo_id` if omitted:
-     - `*-GGUF` (case-insensitive) → `gguf`
-     - `mlx-community/*` or `*-mlx` → `mlx`
-     - everything else → `safetensors`
-   - `--quant` is **required for `gguf`** (e.g. `Q4_K_M`); ignored otherwise.
+Pick the top result that matches the user's format/quant intent. Use its
+`repo_id` as input to resolve or pull.
 
-3. **Use the returned `path`** with the user's runtime:
-   - **gguf**: file path → `llama.cpp` / `llama-server` / Ollama / LM Studio
-   - **mlx**: directory path → `mlx_lm.generate` / `mlx_lm.server` (Apple Silicon)
-   - **safetensors**: directory path → `transformers` / `vllm`
+### 2. Resolve (local, synchronous — returns a path)
 
-4. **Error handling:**
-   - If `status == "missing"`, downloads are disabled in their config —
-     surface that to the user and stop.
-   - If `model-shelf` exits **non-zero with a message on stderr**, surface
-     the error verbatim and stop. Do **not** work around it — don't fall
-     back to `huggingface-cli`, don't change paths, don't retry. Common causes:
-     - **Volume not mounted** — user's external drive isn't connected.
-     - **Shelf not initialized** — error tells them to run `model-shelf init`.
-       Don't run it for them unless they explicitly ask; the curated shelf
-       is a deliberate one-time setup the user owns.
+Use when the agent needs a model available **locally right now** to run
+inference or pass to a runtime.
+
+```bash
+model-shelf resolve <repo_id> [--format gguf|mlx|safetensors] [--quant <QUANT>] --json
+```
+
+- `--format` is auto-detected from `repo_id` if omitted.
+- `--quant` is **required for gguf**; ignored otherwise.
+- Returns `{"status": "found"|"downloaded"|"missing", "path": "..."}`.
+
+### 3. Pull (async, mesh-aware — places model on a node)
+
+Use when the user wants a model available on a specific machine, or wants
+model-shelf to pick the best Executor automatically.
+
+```bash
+# Auto-place on best Executor (smart placement by VRAM + disk)
+model-shelf pull <repo_id> [--format F] [--quant Q] --json
+
+# Explicit target
+model-shelf pull <repo_id> [--format F] [--quant Q] --target <node> --json
+```
+
+- Fire-and-forget. Returns a job ID immediately.
+- If the user specifies where, pass `--target`. Otherwise let model-shelf decide.
+- If the model already exists on a peer node, model-shelf transfers from
+  the peer instead of re-downloading from HF.
+
+### 4. Check status of in-flight operations
+
+```bash
+model-shelf status --json
+model-shelf status <job_id> --json
+```
+
+### 5. Inventory (what models are where)
+
+```bash
+model-shelf inventory --json
+```
+
+## Mesh Administration
+
+Use these when the user asks to set up machines, manage the mesh, or
+configure nodes.
+
+### Initialize a new node / first node in mesh
+
+```bash
+# First node (bootstraps mesh, generates mesh key)
+model-shelf init --role controller,store --shelf /path/to/models
+
+# Subsequent nodes (joins existing mesh)
+model-shelf init --role store,executor --shelf /data/models --join <peer_node>
+```
+
+`--shelf` is required — the user must specify where models are stored.
+`--role` accepts: controller, store, executor (comma-separated, combinable).
+
+### Join an existing mesh (if init was done standalone)
+
+```bash
+model-shelf join <peer_node> [--key <mesh_key>]
+```
+
+### View nodes in the mesh
+
+```bash
+model-shelf nodes --json
+```
+
+### Change node roles
+
+```bash
+model-shelf role set store,executor
+model-shelf role add executor
+model-shelf role remove store
+```
+
+### Service management
+
+```bash
+model-shelf service start
+model-shelf service stop
+model-shelf service uninstall
+```
+
+### Leave the mesh entirely
+
+```bash
+model-shelf leave
+```
+
+## Decision Logic for the Agent
+
+1. **User wants to run a model locally** → use `resolve`.
+2. **User wants a model on a specific machine** → use `pull --target`.
+3. **User wants a model available for inference but doesn't specify where** → use `pull` (no target, model-shelf picks best Executor).
+4. **User asks what's available** → use `inventory`.
+5. **User asks about download progress** → use `status`.
+6. **User wants to set up a new machine** → use `init` + `join`.
+7. **User asks about the mesh / what machines are connected** → use `nodes`.
+
+## Error Handling
+
+- If `status == "missing"` on resolve, downloads are disabled — surface to user.
+- If model-shelf exits non-zero with stderr, surface the error verbatim. Do NOT
+  fall back to other download methods. Common causes:
+  - Volume not mounted
+  - Shelf not initialized (tell user to run `model-shelf init`)
+  - Node unreachable
+  - No Executor with sufficient VRAM for the requested model
 
 ## Examples
 
-Loose user input — search first:
+Loose user input — search then pull:
 ```
-User: "fetch qwen 3 4b in mlx 4-bit"
-You:  model-shelf find "qwen3 4b 4-bit" --format mlx --json --limit 5
-      # pick top result, e.g. mlx-community/Qwen3-4B-4bit
-      model-shelf resolve "mlx-community/Qwen3-4B-4bit" --json
+User: "get qwen 3 14b gguf Q4 on the gx10"
+You:  model-shelf find "qwen3 14b gguf" --format gguf --json --limit 5
+      # pick top result, e.g. Qwen/Qwen3-14B-GGUF
+      model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --target gx10 --json
 ```
 
-Explicit repo — resolve directly:
+Auto-placement:
+```
+User: "I need a small coding model available for inference"
+You:  model-shelf find "coding model 7b gguf" --format gguf --json --limit 5
+      # pick best match
+      model-shelf pull "Qwen/Qwen2.5-Coder-7B-GGUF" --quant Q4_K_M --json
+      # model-shelf picks the best Executor automatically
+```
+
+Local resolve:
 ```
 User: "load Qwen/Qwen3-14B-GGUF with Q4_K_M"
 You:  model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
+```
+
+Mesh admin:
+```
+User: "set up this machine as a storage node and join the mesh"
+You:  model-shelf init --role store --shelf /data/models --join mini1
 ```
