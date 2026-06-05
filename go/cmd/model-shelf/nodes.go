@@ -1,0 +1,135 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/alexziskind1/model-shelf/internal/daemon"
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
+)
+
+func cmdNodes(args []string) int {
+	_, flags := parseFlags(args)
+	jsonOutput := flags["json"] == "true"
+
+	// Load config to determine daemon port and mesh key.
+	if !meshconfig.Exists() {
+		fmt.Fprintf(os.Stderr, "error: mesh not configured. Run 'model-shelf init' first.\n")
+		return 1
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Query local daemon.
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/nodes", cfg.Port)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	if cfg.MeshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "daemon not running — start with `model-shelf service start`\n")
+		return 1
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: reading response: %v\n", err)
+		return 1
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "error: daemon returned %d: %s\n", resp.StatusCode, string(body))
+		return 1
+	}
+
+	var nodes []daemon.MeshNode
+	if err := json.Unmarshal(body, &nodes); err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid response from daemon: %v\n", err)
+		return 1
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(nodes)
+		return 0
+	}
+
+	printNodesTable(nodes)
+	return 0
+}
+
+func printNodesTable(nodes []daemon.MeshNode) {
+	if len(nodes) == 0 {
+		fmt.Println("No nodes in mesh.")
+		return
+	}
+
+	// Compute column widths.
+	headers := []string{"NAME", "ROLES", "STATUS", "DISK FREE", "VRAM"}
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = len(h)
+	}
+
+	type row struct {
+		name     string
+		roles    string
+		status   string
+		diskFree string
+		vram     string
+	}
+	rows := make([]row, len(nodes))
+	for i, n := range nodes {
+		roles := strings.Join(n.Roles, ",")
+		status := string(n.Status)
+
+		// Disk and VRAM not yet propagated via gossip — show "-".
+		diskFree := "-"
+		vram := "-"
+
+		rows[i] = row{n.Name, roles, status, diskFree, vram}
+
+		if len(n.Name) > widths[0] {
+			widths[0] = len(n.Name)
+		}
+		if len(roles) > widths[1] {
+			widths[1] = len(roles)
+		}
+		if len(status) > widths[2] {
+			widths[2] = len(status)
+		}
+		if len(diskFree) > widths[3] {
+			widths[3] = len(diskFree)
+		}
+		if len(vram) > widths[4] {
+			widths[4] = len(vram)
+		}
+	}
+
+	// Print header.
+	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds\n",
+		widths[0], widths[1], widths[2], widths[3], widths[4])
+	fmt.Printf(fmtStr, headers[0], headers[1], headers[2], headers[3], headers[4])
+
+	// Print rows.
+	for _, r := range rows {
+		fmt.Printf(fmtStr, r.name, r.roles, r.status, r.diskFree, r.vram)
+	}
+}
