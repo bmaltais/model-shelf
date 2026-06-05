@@ -27,6 +27,12 @@ func install(exePath string) error {
 	descCmd := exec.Command("sc", "description", serviceName, "Model Shelf mesh daemon for model resolution and coordination")
 	_ = descCmd.Run()
 
+	// Start the service immediately.
+	startCmd := exec.Command("sc", "start", serviceName)
+	if out, err := startCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("sc start: %s (%w)", strings.TrimSpace(string(out)), err)
+	}
+
 	return nil
 }
 

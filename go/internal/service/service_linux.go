@@ -67,6 +67,11 @@ func install(exePath string) error {
 		return fmt.Errorf("enable: %w", err)
 	}
 
+	// Start the service immediately.
+	if err := systemctl("start", serviceName+".service"); err != nil {
+		return fmt.Errorf("start: %w", err)
+	}
+
 	return nil
 }
 
