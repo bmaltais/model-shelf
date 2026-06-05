@@ -17,6 +17,15 @@ import (
 
 func cmdNodes(args []string) int {
 	_, flags := parseFlags(args)
+	if flags["help"] == "true" {
+		fmt.Println("Usage: model-shelf nodes [--json]")
+		fmt.Println()
+		fmt.Println("List mesh nodes.")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --json             Emit JSON output")
+		return 0
+	}
 	jsonOutput := flags["json"] == "true"
 
 	// Load config to determine daemon port and mesh key.

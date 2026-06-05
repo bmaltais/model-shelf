@@ -33,30 +33,52 @@ Local AI workflows download the same model files over and over — across tools,
 
 That's it. The plugin installs a [skill](skills/resolve/SKILL.md) that tells the agent to always resolve through Model Shelf, plus a SessionStart hook that auto-installs the CLI via `uv` on first session. Requires [`uv`](https://docs.astral.sh/uv/) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh` if you don't have it.
 
-### Go binary (recommended — single file, no runtime needed)
+### Quick install (recommended)
+
+Auto-detects your OS and architecture, installs to `~/.local/bin`:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/bmaltais/model-shelf/main/install.sh | sh
+```
+
+> **Note:** Ensure `~/.local/bin` is on your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if needed.
+
+### Go binary (manual download)
 
 Download the latest binary for your platform from [Releases](https://github.com/bmaltais/model-shelf/releases):
 
 ```bash
+# User-local install (no sudo required) — recommended
+mkdir -p ~/.local/bin
+
 # macOS Apple Silicon
-curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-darwin-arm64 -o model-shelf
-chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-darwin-arm64 -o ~/.local/bin/model-shelf
+chmod +x ~/.local/bin/model-shelf
 
 # macOS Intel
-curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-darwin-amd64 -o model-shelf
-chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-darwin-amd64 -o ~/.local/bin/model-shelf
+chmod +x ~/.local/bin/model-shelf
 
 # Linux amd64
-curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-amd64 -o model-shelf
-chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-amd64 -o ~/.local/bin/model-shelf
+chmod +x ~/.local/bin/model-shelf
 
 # Linux arm64
-curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-arm64 -o model-shelf
-chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-arm64 -o ~/.local/bin/model-shelf
+chmod +x ~/.local/bin/model-shelf
 
 # Windows (PowerShell)
 Invoke-WebRequest -Uri https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-windows-amd64.exe -OutFile model-shelf.exe
 ```
+
+<details>
+<summary>System-wide install (requires sudo)</summary>
+
+```bash
+curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-amd64 -o model-shelf
+chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
+```
+</details>
 
 Or build from source (requires Go 1.22+):
 
