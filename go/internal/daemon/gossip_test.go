@@ -174,6 +174,44 @@ func TestEventsEndpoint_InvalidBody(t *testing.T) {
 	}
 }
 
+func TestEventsEndpoint_UnknownEventType(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}}
+	d := New(cfg)
+
+	ev := Event{Type: "bogus", Node: MeshNode{Name: "x"}, Timestamp: time.Now()}
+	body, _ := json.Marshal(ev)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	d.handleEvents(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown event type, got %d", w.Code)
+	}
+}
+
+func TestEventsEndpoint_MissingNodeName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}}
+	d := New(cfg)
+
+	ev := Event{Type: EventJoin, Node: MeshNode{Name: ""}, Timestamp: time.Now()}
+	body, _ := json.Marshal(ev)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	d.handleEvents(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing node name, got %d", w.Code)
+	}
+}
+
 func TestEventsEndpoint_MethodNotAllowed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -246,10 +284,27 @@ func TestGossipNodeOfflineAfterMissedPolls(t *testing.T) {
 
 	g := NewGossip(selfNode, "")
 
-	// Add a peer that won't be reachable (port 1 never listens, fails fast).
+	// Start a mock server that always returns 503 (unhealthy).
+	unhealthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer unhealthyServer.Close()
+
+	// Extract host and port from mock server.
+	addr := unhealthyServer.Listener.Addr().String()
+	host := "127.0.0.1"
+	var port int
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			fmt.Sscanf(addr[i+1:], "%d", &port)
+			break
+		}
+	}
+
+	// Add a peer that returns unhealthy responses.
 	g.ApplyEvent(Event{
 		Type: EventJoin,
-		Node: MeshNode{Name: "unreachable", Address: "127.0.0.1", Port: 1, Roles: []string{"store"}, Status: StatusOnline},
+		Node: MeshNode{Name: "unreachable", Address: host, Port: port, Roles: []string{"store"}, Status: StatusOnline},
 	})
 
 	// Run pollPeers 3 times — node should go offline.
@@ -263,8 +318,8 @@ func TestGossipNodeOfflineAfterMissedPolls(t *testing.T) {
 			if n.Status != StatusOffline {
 				t.Errorf("expected node to be offline after 3 missed polls, got %q", n.Status)
 			}
-			if n.MissedPolls < 3 {
-				t.Errorf("expected at least 3 missed polls, got %d", n.MissedPolls)
+			if n.MissedPolls != 3 {
+				t.Errorf("expected exactly 3 missed polls, got %d", n.MissedPolls)
 			}
 			return
 		}

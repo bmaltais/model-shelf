@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	pollInterval       = 60 * time.Second
-	offlineThreshold   = 3
-	eventPushTimeout   = 5 * time.Second
+	pollInterval     = 60 * time.Second
+	offlineThreshold = 3
+	eventPushTimeout = 5 * time.Second
 )
 
 // NodeStatus represents whether a node is online or offline.
@@ -44,6 +44,15 @@ const (
 	EventHealthChange EventType = "health_change"
 )
 
+// validEventType returns true if the event type is recognized.
+func validEventType(t EventType) bool {
+	switch t {
+	case EventJoin, EventLeave, EventHealthChange:
+		return true
+	}
+	return false
+}
+
 // Event is pushed between nodes to replicate state changes.
 type Event struct {
 	Type      EventType `json:"type"`
@@ -68,7 +77,11 @@ func NewGossip(selfNode MeshNode, meshKey string) *Gossip {
 	}
 
 	// Try to load persisted state.
-	if persisted, err := loadMeshState(); err == nil && len(persisted) > 0 {
+	persisted, err := loadMeshState()
+	if err != nil {
+		log.Printf("gossip: failed to load persisted state: %v (starting fresh)", err)
+	}
+	if len(persisted) > 0 {
 		// Ensure self is present and online.
 		found := false
 		for i := range persisted {
@@ -195,15 +208,20 @@ func (g *Gossip) SetNodes(nodes []MeshNode) {
 // StartPoller begins the background health poll loop.
 func (g *Gossip) StartPoller(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
+	g.mu.Lock()
 	g.cancel = cancel
+	g.mu.Unlock()
 
 	go g.pollLoop(ctx)
 }
 
 // Stop cancels the background poller.
 func (g *Gossip) Stop() {
-	if g.cancel != nil {
-		g.cancel()
+	g.mu.Lock()
+	cancel := g.cancel
+	g.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -228,6 +246,7 @@ func (g *Gossip) pollPeers() {
 	g.mu.RUnlock()
 
 	var changed bool
+	var transitioned []MeshNode // nodes that changed status (for gossip push)
 	for i := range nodes {
 		if nodes[i].Name == g.self {
 			continue
@@ -237,12 +256,18 @@ func (g *Gossip) pollPeers() {
 				nodes[i].Status = StatusOnline
 				nodes[i].MissedPolls = 0
 				changed = true
+				transitioned = append(transitioned, nodes[i])
+				log.Printf("gossip: node %q is back online", nodes[i].Name)
 			}
 		} else {
-			nodes[i].MissedPolls++
-			changed = true
+			if nodes[i].MissedPolls < offlineThreshold {
+				nodes[i].MissedPolls++
+				changed = true
+			}
 			if nodes[i].MissedPolls >= offlineThreshold && nodes[i].Status != StatusOffline {
 				nodes[i].Status = StatusOffline
+				changed = true
+				transitioned = append(transitioned, nodes[i])
 				log.Printf("gossip: node %q marked offline (missed %d polls)", nodes[i].Name, nodes[i].MissedPolls)
 			}
 		}
@@ -259,8 +284,19 @@ func (g *Gossip) pollPeers() {
 				}
 			}
 		}
+		allNodes := make([]MeshNode, len(g.nodes))
+		copy(allNodes, g.nodes)
 		g.persistLocked()
 		g.mu.Unlock()
+
+		// Push health change events for nodes that transitioned status.
+		for _, node := range transitioned {
+			g.pushEvent(Event{
+				Type:      EventHealthChange,
+				Node:      node,
+				Timestamp: time.Now(),
+			}, allNodes)
+		}
 	}
 }
 

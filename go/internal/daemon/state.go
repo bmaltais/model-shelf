@@ -13,7 +13,7 @@ func meshStatePath() string {
 	return filepath.Join(meshconfig.StateDir(), "mesh.json")
 }
 
-// saveMeshState persists the node list to disk.
+// saveMeshState persists the node list to disk atomically (temp file + rename).
 func saveMeshState(nodes []MeshNode) error {
 	path := meshStatePath()
 	dir := filepath.Dir(path)
@@ -24,7 +24,12 @@ func saveMeshState(nodes []MeshNode) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	// Write to a temp file then rename for crash safety.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // loadMeshState loads the node list from disk.

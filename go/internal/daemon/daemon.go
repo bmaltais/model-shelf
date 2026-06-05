@@ -221,6 +221,20 @@ func (d *Daemon) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate event type and required fields.
+	if !validEventType(ev.Type) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "unknown event type"}`))
+		return
+	}
+	if ev.Node.Name == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "event node name is required"}`))
+		return
+	}
+
 	d.gossip.ApplyEvent(ev)
 
 	w.Header().Set("Content-Type", "application/json")
