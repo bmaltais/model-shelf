@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SupportedFormats lists the model formats handled by Model Shelf.
@@ -143,7 +144,8 @@ func LookupGGUFFilename(repoID, quant string) string {
 	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil {
 			resp.Body.Close()
@@ -184,13 +186,7 @@ func matchGGUFFile(siblings []hfRepoFile, quant, repoID string) string {
 		// Prefer exact quant boundary match (surrounded by non-alphanumeric).
 		for _, c := range candidates {
 			lower := strings.ToLower(c)
-			idx := strings.Index(lower, quantLower)
-			if idx < 0 {
-				continue
-			}
-			before := idx == 0 || !isAlphaNum(lower[idx-1])
-			after := idx+len(quantLower) >= len(lower) || !isAlphaNum(lower[idx+len(quantLower)])
-			if before && after {
+			if hasBoundaryMatch(lower, quantLower) {
 				return c
 			}
 		}
@@ -203,6 +199,24 @@ func matchGGUFFile(siblings []hfRepoFile, quant, repoID string) string {
 
 func isAlphaNum(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// hasBoundaryMatch checks if needle appears in s at a word boundary (all occurrences).
+func hasBoundaryMatch(s, needle string) bool {
+	offset := 0
+	for {
+		idx := strings.Index(s[offset:], needle)
+		if idx < 0 {
+			return false
+		}
+		absIdx := offset + idx
+		before := absIdx == 0 || !isAlphaNum(s[absIdx-1])
+		after := absIdx+len(needle) >= len(s) || !isAlphaNum(s[absIdx+len(needle)])
+		if before && after {
+			return true
+		}
+		offset = absIdx + 1
+	}
 }
 
 // ShelfPathGGUF returns the shelf path for a GGUF model file.
@@ -489,15 +503,15 @@ func resolveGGUF(cfg *Config, repoID, quant string) (*ResolveResult, error) {
 	}
 
 	// Download into primary shelf.
-	// Look up the actual filename from the HF API (handles non-standard naming).
-	hfName := LookupGGUFFilename(repoID, quant)
-
-	// Compute the shelf path using the actual filename.
-	publisher, repo, err := splitRepoID(repoID)
+	// Use the deterministic shelf path for local storage.
+	finalPath, err := ShelfPathGGUF(cfg.ShelfRoot, repoID, quant)
 	if err != nil {
 		return nil, err
 	}
-	finalPath := filepath.Join(cfg.ShelfRoot, "gguf", publisher, repo, hfName)
+
+	// Look up the actual filename from the HF API for the download URL
+	// (handles non-standard naming conventions like TheBloke's).
+	hfName := LookupGGUFFilename(repoID, quant)
 
 	dir := filepath.Dir(finalPath)
 	dirExisted := dirExists(dir)

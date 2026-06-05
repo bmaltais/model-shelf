@@ -37,6 +37,7 @@ func acquireLock(shelfRoot, repoID, qualifier string) (release func(), err error
 		pollInterval = 200 * time.Millisecond
 		timeout      = 10 * time.Minute // generous for large downloads
 		staleAge     = 30 * time.Minute // locks older than this are considered stale
+		touchInterval = 30 * time.Second // keep lock fresh while held
 	)
 
 	deadline := time.Now().Add(timeout)
@@ -45,7 +46,27 @@ func acquireLock(shelfRoot, repoID, qualifier string) (release func(), err error
 		if err == nil {
 			// Successfully acquired the lock.
 			f.Close()
-			return func() { os.Remove(path) }, nil
+
+			// Start a background goroutine to keep the lock file fresh.
+			done := make(chan struct{})
+			go func() {
+				ticker := time.NewTicker(touchInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-done:
+						return
+					case <-ticker.C:
+						now := time.Now()
+						_ = os.Chtimes(path, now, now)
+					}
+				}
+			}()
+
+			return func() {
+				close(done)
+				os.Remove(path)
+			}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, err
