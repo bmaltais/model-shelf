@@ -459,10 +459,16 @@ func cmdList(args []string) int {
 	}
 
 	if flags["json"] == "true" {
-		entries := collectShelfEntries(cfg.ShelfRoot)
+		entries, errs := collectShelfEntries(cfg.ShelfRoot)
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", e)
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(entries)
+		if err := enc.Encode(entries); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -470,8 +476,9 @@ func cmdList(args []string) int {
 	return 0
 }
 
-func collectShelfEntries(root string) []ShelfEntry {
-	var entries []ShelfEntry
+func collectShelfEntries(root string) ([]ShelfEntry, []error) {
+	entries := []ShelfEntry{}
+	var errs []error
 	for _, format := range resolver.SupportedFormats {
 		sub := filepath.Join(root, format)
 		info, err := os.Stat(sub)
@@ -480,14 +487,17 @@ func collectShelfEntries(root string) []ShelfEntry {
 		}
 		publishers, err := os.ReadDir(sub)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("reading %s: %w", sub, err))
 			continue
 		}
 		for _, pub := range publishers {
 			if !pub.IsDir() || strings.HasPrefix(pub.Name(), ".") {
 				continue
 			}
-			repos, err := os.ReadDir(filepath.Join(sub, pub.Name()))
+			pubPath := filepath.Join(sub, pub.Name())
+			repos, err := os.ReadDir(pubPath)
 			if err != nil {
+				errs = append(errs, fmt.Errorf("reading %s: %w", pubPath, err))
 				continue
 			}
 			for _, repo := range repos {
@@ -505,11 +515,14 @@ func collectShelfEntries(root string) []ShelfEntry {
 			}
 		}
 	}
-	return entries
+	return entries, errs
 }
 
 func printShelfContents(root string) {
-	entries := collectShelfEntries(root)
+	entries, errs := collectShelfEntries(root)
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", e)
+	}
 	// Group entries by format for display.
 	byFormat := make(map[string][]ShelfEntry)
 	for _, e := range entries {
