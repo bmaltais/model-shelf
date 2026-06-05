@@ -74,6 +74,8 @@ Invoke-WebRequest -Uri https://github.com/bmaltais/model-shelf/releases/latest/d
 <details>
 <summary>System-wide install (requires sudo)</summary>
 
+Replace the URL with the correct binary for your OS/architecture (see platform list above):
+
 ```bash
 curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-amd64 -o model-shelf
 chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/

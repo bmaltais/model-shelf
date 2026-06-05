@@ -28,17 +28,19 @@ case "$ARCH" in
     ;;
 esac
 
-# Build download URL
+# Build download URL and target path
 BINARY="model-shelf-${OS}-${ARCH}"
+TARGET="${INSTALL_DIR}/model-shelf"
 if [ "$OS" = "windows" ]; then
   BINARY="${BINARY}.exe"
+  TARGET="${TARGET}.exe"
 fi
 URL="https://github.com/${REPO}/releases/latest/download/${BINARY}"
 
 echo "model-shelf installer"
 echo "  OS:      $OS"
 echo "  Arch:    $ARCH"
-echo "  Target:  ${INSTALL_DIR}/model-shelf"
+echo "  Target:  ${TARGET}"
 echo ""
 
 # Create install directory
@@ -47,24 +49,20 @@ mkdir -p "$INSTALL_DIR"
 # Download
 echo "Downloading ${URL}..."
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$URL" -o "${INSTALL_DIR}/model-shelf"
+  curl -fsSL "$URL" -o "${TARGET}"
 elif command -v wget >/dev/null 2>&1; then
-  wget -q "$URL" -O "${INSTALL_DIR}/model-shelf"
+  wget -q "$URL" -O "${TARGET}"
 else
   echo "error: curl or wget is required" >&2
   exit 1
 fi
 
 # Make executable
-chmod +x "${INSTALL_DIR}/model-shelf"
+chmod +x "${TARGET}"
 
 # Verify
-if "${INSTALL_DIR}/model-shelf" version >/dev/null 2>&1; then
-  VERSION=$("${INSTALL_DIR}/model-shelf" version)
-  echo "Installed: $VERSION"
-else
-  echo "warning: installed binary but could not verify (may need different platform)" >&2
-fi
+VERSION=$("${TARGET}" version 2>/dev/null) && echo "Installed: $VERSION" \
+  || echo "warning: installed binary but could not verify (may need different platform)" >&2
 
 # Check PATH
 case ":$PATH:" in
