@@ -38,11 +38,13 @@ func TestCmdNodes_JSON(t *testing.T) {
 	// Write config with matching port.
 	cfg := &meshconfig.Config{
 		Name:      "node1",
-		Port:      mustAtoi(port),
+		Port:      mustAtoi(t, port),
 		Roles:     []string{"controller", "store"},
 		ShelfRoot: filepath.Join(home, "shelf"),
 	}
-	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
 
 	// Capture stdout.
 	old := os.Stdout
@@ -95,11 +97,13 @@ func TestCmdNodes_Table(t *testing.T) {
 	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
 	cfg := &meshconfig.Config{
 		Name:      "ctrl",
-		Port:      mustAtoi(port),
+		Port:      mustAtoi(t, port),
 		Roles:     []string{"controller"},
 		ShelfRoot: filepath.Join(home, "shelf"),
 	}
-	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -147,7 +151,9 @@ func TestCmdNodes_DaemonNotRunning(t *testing.T) {
 		Roles:     []string{"store"},
 		ShelfRoot: filepath.Join(home, "shelf"),
 	}
-	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
 
 	// Capture stderr.
 	old := os.Stderr
@@ -180,8 +186,11 @@ func TestCmdNodes_NoConfig(t *testing.T) {
 	}
 }
 
-func mustAtoi(s string) int {
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
 	var n int
-	fmt.Sscanf(s, "%d", &n)
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		t.Fatalf("mustAtoi(%q): %v", s, err)
+	}
 	return n
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
@@ -42,7 +44,7 @@ func cmdNodes(args []string) int {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "daemon not running — start with `model-shelf service start`\n")
+		fmt.Fprintf(os.Stderr, "daemon not running — start with `model-shelf service start` (%v)\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
@@ -81,7 +83,13 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		return
 	}
 
-	// Compute column widths.
+	// Determine terminal width (default 80 if not a terminal).
+	termWidth := 80
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		termWidth = w
+	}
+
+	// Compute column widths from content.
 	headers := []string{"NAME", "ROLES", "STATUS", "DISK FREE", "VRAM"}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
@@ -123,13 +131,54 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		}
 	}
 
+	// Truncate columns to fit terminal width.
+	// Separators take 2 chars each (4 gaps × 2 = 8 chars).
+	const gapWidth = 2
+	totalGaps := (len(headers) - 1) * gapWidth
+	totalContent := 0
+	for _, w := range widths {
+		totalContent += w
+	}
+	// If content + gaps exceed terminal, shrink the widest columns.
+	for totalContent+totalGaps > termWidth {
+		// Find the widest column and shrink it by 1.
+		maxIdx := 0
+		for i := 1; i < len(widths); i++ {
+			if widths[i] > widths[maxIdx] {
+				maxIdx = i
+			}
+		}
+		if widths[maxIdx] <= 3 {
+			break // Don't shrink below 3 chars.
+		}
+		widths[maxIdx]--
+		totalContent--
+	}
+
 	// Print header.
 	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds\n",
 		widths[0], widths[1], widths[2], widths[3], widths[4])
 	fmt.Printf(fmtStr, headers[0], headers[1], headers[2], headers[3], headers[4])
 
-	// Print rows.
+	// Print rows (truncate values to column width).
 	for _, r := range rows {
-		fmt.Printf(fmtStr, r.name, r.roles, r.status, r.diskFree, r.vram)
+		fmt.Printf(fmtStr,
+			truncate(r.name, widths[0]),
+			truncate(r.roles, widths[1]),
+			truncate(r.status, widths[2]),
+			truncate(r.diskFree, widths[3]),
+			truncate(r.vram, widths[4]),
+		)
 	}
+}
+
+// truncate shortens s to maxLen, adding "…" if truncated.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 1 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-1] + "…"
 }
