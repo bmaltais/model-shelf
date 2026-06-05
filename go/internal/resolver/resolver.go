@@ -320,8 +320,12 @@ func checkPathAncestors(target string) error {
 	for _, component := range components {
 		info, err := os.Stat(component)
 		if err != nil {
-			// Doesn't exist yet — ancestors above were fine, mkdir will work.
-			return nil
+			if os.IsNotExist(err) {
+				// Doesn't exist yet — ancestors above were fine, mkdir will work.
+				return nil
+			}
+			// Permission error or other real problem — surface it.
+			return fmt.Errorf("cannot create shelf at %s: stat %s: %w", target, component, err)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("cannot create shelf at %s: %s exists but is not a directory", target, component)
@@ -556,7 +560,7 @@ func downloadFile(url, dest string) error {
 }
 
 // clarify401 distinguishes "repo not found" from "repo requires authentication"
-// by checking the repo page directly.
+// by probing the HF models API endpoint for the repo.
 func clarify401(fileURL string) error {
 	// Extract repo ID from URL like https://huggingface.co/<owner>/<repo>/resolve/main/<file>
 	repoID := extractRepoID(fileURL)
@@ -564,7 +568,8 @@ func clarify401(fileURL string) error {
 		return fmt.Errorf("HTTP 401 for %s", fileURL)
 	}
 
-	// HEAD the repo page — HF returns 404 for truly nonexistent repos.
+	// HEAD the models API — HF returns 404 for truly nonexistent repos,
+	// 200 or 401/403 for repos that exist but require auth.
 	checkURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
 	headReq, err := http.NewRequest("HEAD", checkURL, nil)
 	if err != nil {
@@ -576,10 +581,15 @@ func clarify401(fileURL string) error {
 	}
 	headResp.Body.Close()
 
-	if headResp.StatusCode == 404 {
+	switch headResp.StatusCode {
+	case 404:
 		return fmt.Errorf("repository %q not found on Hugging Face", repoID)
+	case 200, 401, 403:
+		return fmt.Errorf("repository %q requires authentication — set HF_TOKEN", repoID)
+	default:
+		// Unexpected status (429, 5xx, etc.) — fall back to original context.
+		return fmt.Errorf("HTTP 401 for %s (probe returned %d)", fileURL, headResp.StatusCode)
 	}
-	return fmt.Errorf("repository %q requires authentication — set HF_TOKEN", repoID)
 }
 
 // extractRepoID extracts "owner/repo" from a HuggingFace file URL.

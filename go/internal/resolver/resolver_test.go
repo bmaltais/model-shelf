@@ -287,4 +287,27 @@ func TestClarify401_RepoRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestClarify401_UnexpectedStatus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Server returns 503 (unexpected) — should fall back to generic 401.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	err := clarify401("https://huggingface.co/some-user/some-repo/resolve/main/file.gguf")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "HTTP 401") || !strings.Contains(got, "probe returned 503") {
+		t.Errorf("unexpected error: %s", got)
+	}
+}
+
 

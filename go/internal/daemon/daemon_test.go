@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
@@ -134,6 +136,34 @@ func TestAuthMiddleware_HealthPublic(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestRun_PortConflict(t *testing.T) {
+	// Pre-bind a port so the daemon's Run() fails on the same port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// Extract the port number.
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      port,
+		Roles:     []string{"store"},
+		ShelfRoot: t.TempDir(),
+	}
+	d := New(cfg)
+
+	err = d.Run()
+	if err == nil {
+		t.Fatal("expected error when port is already in use")
+	}
+	if !strings.Contains(err.Error(), "address already in use") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
