@@ -200,9 +200,28 @@ func cmdInit(args []string) int {
 		fmt.Fprintf(os.Stderr, "usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--force]\n")
 		return 1
 	}
-	roles := strings.Split(roleStr, ",")
-	for i := range roles {
-		roles[i] = strings.TrimSpace(roles[i])
+
+	// Parse and validate roles.
+	validRoles := map[string]bool{"controller": true, "store": true, "executor": true}
+	seen := make(map[string]bool)
+	var roles []string
+	for _, r := range strings.Split(roleStr, ",") {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if !validRoles[r] {
+			fmt.Fprintf(os.Stderr, "error: unknown role %q (valid: controller, store, executor)\n", r)
+			return 1
+		}
+		if !seen[r] {
+			seen[r] = true
+			roles = append(roles, r)
+		}
+	}
+	if len(roles) == 0 {
+		fmt.Fprintf(os.Stderr, "error: --role requires at least one valid role (controller, store, executor)\n")
+		return 1
 	}
 
 	// Resolve shelf path to absolute.
@@ -225,6 +244,14 @@ func cmdInit(args []string) int {
 		name = meshconfig.GetHostname()
 	}
 
+	// Create shelf directories first (fail early before writing config).
+	resolverCfg := &resolver.Config{ShelfRoot: absShelf, AllowDownloads: true}
+	created, err := resolver.InitShelf(resolverCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
 	// Write mesh config.
 	meshCfg := &meshconfig.Config{
 		Name:      name,
@@ -238,22 +265,21 @@ func cmdInit(args []string) int {
 	}
 	fmt.Printf("model-shelf: wrote %s\n", meshconfig.ConfigPath())
 
-	// Generate mesh key.
-	key, err := meshconfig.GenerateMeshKey()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error generating mesh key: %v\n", err)
-		return 1
-	}
-	fmt.Printf("model-shelf: generated mesh key at %s\n", meshconfig.MeshKeyPath())
-	fmt.Printf("\n  mesh key: %s\n\n", key)
-	fmt.Println("  Share this key with other nodes to join the mesh.")
-
-	// Create shelf directories.
-	resolverCfg := &resolver.Config{ShelfRoot: absShelf, AllowDownloads: true}
-	created, err := resolver.InitShelf(resolverCfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+	// Generate mesh key only if one doesn't already exist.
+	keyPath := meshconfig.MeshKeyPath()
+	if keyData, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(keyData))) > 0 {
+		key := strings.TrimSpace(string(keyData))
+		fmt.Printf("model-shelf: existing mesh key at %s (preserved)\n", keyPath)
+		fmt.Printf("\n  mesh key: %s\n\n", key)
+	} else {
+		key, err := meshconfig.GenerateMeshKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error generating mesh key: %v\n", err)
+			return 1
+		}
+		fmt.Printf("model-shelf: generated mesh key at %s\n", keyPath)
+		fmt.Printf("\n  mesh key: %s\n\n", key)
+		fmt.Println("  Share this key with other nodes to join the mesh.")
 	}
 
 	if len(created) == 0 {

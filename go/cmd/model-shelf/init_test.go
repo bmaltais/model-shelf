@@ -142,8 +142,77 @@ func TestCmdInit_DefaultsToHostname(t *testing.T) {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	hostname, _ := os.Hostname()
+	hostname := meshconfig.GetHostname()
 	if cfg.Name != hostname {
 		t.Errorf("expected name %q (hostname), got %q", hostname, cfg.Name)
+	}
+}
+
+func TestCmdInit_RejectsUnknownRole(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	code := cmdInit([]string{"--role", "invalid", "--shelf", "/tmp/x"})
+	if code != 1 {
+		t.Fatalf("expected exit 1 for unknown role, got %d", code)
+	}
+}
+
+func TestCmdInit_RejectsEmptyRoles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	code := cmdInit([]string{"--role", ",,,", "--shelf", "/tmp/x"})
+	if code != 1 {
+		t.Fatalf("expected exit 1 for empty roles, got %d", code)
+	}
+}
+
+func TestCmdInit_DeduplicatesRoles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	code := cmdInit([]string{"--role", "store,store,controller", "--shelf", shelfPath})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	configPath := filepath.Join(home, ".model-shelf", "config.toml")
+	cfg, err := meshconfig.LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if len(cfg.Roles) != 2 {
+		t.Errorf("expected 2 deduplicated roles, got %v", cfg.Roles)
+	}
+}
+
+func TestCmdInit_ForcePreservesExistingKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// First init generates a key.
+	code := cmdInit([]string{"--role", "store", "--shelf", shelfPath, "--name", "node1"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Read the generated key.
+	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	origKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("failed to read mesh.key: %v", err)
+	}
+
+	// Second init with --force should preserve the key.
+	code = cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "node2", "--force"})
+	if code != 0 {
+		t.Fatalf("force init failed with code %d", code)
+	}
+
+	newKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("failed to read mesh.key after force: %v", err)
+	}
+	if string(newKey) != string(origKey) {
+		t.Errorf("mesh key was rotated on --force; expected preservation")
 	}
 }
