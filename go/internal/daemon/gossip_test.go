@@ -432,6 +432,179 @@ func TestJoinEndpoint_PushesGossipState(t *testing.T) {
 	}
 }
 
+func TestAddNode_EvictsOldNodeWithSameAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now())
+
+	// Start a local server to absorb async gossip pushes (avoids 5s timeout on 10.x.x.x).
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer sink.Close()
+	sinkHost, sinkPort := parseHostPort(t, sink)
+
+	// Add a node named "ocilab1" at the sink address.
+	g.AddNode(MeshNode{
+		Name:    "ocilab1",
+		Address: sinkHost,
+		Port:    sinkPort,
+		Roles:   []string{"controller", "store"},
+		Status:  StatusOnline,
+	})
+
+	// Same machine re-registers with a new name "localtest" at same address.
+	g.AddNode(MeshNode{
+		Name:    "localtest",
+		Address: sinkHost,
+		Port:    sinkPort,
+		Roles:   []string{"controller", "store"},
+		Status:  StatusOnline,
+	})
+
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "ocilab1" {
+			t.Error("old node name 'ocilab1' should have been evicted after rename")
+		}
+	}
+
+	// Should have exactly 2 nodes: controller + localtest.
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes (controller + localtest), got %d", len(nodes))
+		for _, n := range nodes {
+			t.Logf("  node: %s @ %s:%d", n.Name, n.Address, n.Port)
+		}
+	}
+}
+
+// parseHostPort extracts host and port from an httptest.Server.
+func parseHostPort(t *testing.T, s *httptest.Server) (string, int) {
+	t.Helper()
+	addr := s.Listener.Addr().String()
+	host := "127.0.0.1"
+	var port int
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			fmt.Sscanf(addr[i+1:], "%d", &port)
+			break
+		}
+	}
+	return host, port
+}
+
+func TestApplyEvent_EvictsOldNodeWithSameAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now())
+
+	// Existing node "ocilab1" at 10.0.0.2:8844.
+	g.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "ocilab1", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	// Same address re-announces as "localtest".
+	g.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "localtest", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "ocilab1" {
+			t.Error("old node 'ocilab1' should have been evicted by same-address re-registration")
+		}
+	}
+
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(nodes))
+	}
+}
+
+func TestNewGossip_DeduplicatesPersistedState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Pre-persist state with a duplicate address (simulates rename ghost in mesh.json).
+	ghostState := []MeshNode{
+		{Name: "oldname", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+		{Name: "newname", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+		{Name: "other", Address: "10.0.0.3", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+	}
+	if err := SaveMeshState(ghostState); err != nil {
+		t.Fatalf("failed to persist state: %v", err)
+	}
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now())
+	nodes := g.Nodes()
+
+	// Should have: controller, newname (last entry for 10.0.0.2), other = 3 nodes.
+	// "oldname" should be deduped away.
+	for _, n := range nodes {
+		if n.Name == "oldname" {
+			t.Error("ghost node 'oldname' should have been deduplicated at load time")
+		}
+	}
+	if len(nodes) != 3 {
+		t.Errorf("expected 3 nodes (controller + newname + other), got %d", len(nodes))
+		for _, n := range nodes {
+			t.Logf("  node: %s @ %s:%d", n.Name, n.Address, n.Port)
+		}
+	}
+}
+
+func TestSetNodes_DeduplicatesByAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now())
+
+	// SetNodes with duplicate address entries.
+	g.SetNodes([]MeshNode{
+		selfNode,
+		{Name: "stale", Address: "10.0.0.5", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+		{Name: "fresh", Address: "10.0.0.5", Port: 8844, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "stale" {
+			t.Error("stale node should have been deduplicated in SetNodes")
+		}
+	}
+	if len(nodes) != 2 {
+		t.Errorf("expected 2 nodes (controller + fresh), got %d", len(nodes))
+	}
+}
+
 func TestPollPeers_UpdatesDiskFreeGB(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

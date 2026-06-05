@@ -339,3 +339,75 @@ func TestCmdInit_ExecutorRoleDoesNotGenerateKey(t *testing.T) {
 		t.Errorf("expected join guidance in output, got:\n%s", output)
 	}
 }
+
+func TestCmdInit_SeedAndKeyFlags(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	code := cmdInit([]string{
+		"--role", "store",
+		"--shelf", shelfPath,
+		"--name", "store1",
+		"--seed", "ocilab1:8844,mini1:8844",
+		"--key", "abc123deadbeef",
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	// Verify seeds are in config.
+	configPath := filepath.Join(home, ".model-shelf", "config.toml")
+	cfg, err := meshconfig.LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if len(cfg.Seeds) != 2 {
+		t.Fatalf("expected 2 seeds, got %v", cfg.Seeds)
+	}
+	if cfg.Seeds[0] != "ocilab1:8844" || cfg.Seeds[1] != "mini1:8844" {
+		t.Errorf("unexpected seeds: %v", cfg.Seeds)
+	}
+
+	// Verify mesh key was written.
+	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("mesh.key not created: %v", err)
+	}
+	if strings.TrimSpace(string(keyData)) != "abc123deadbeef" {
+		t.Errorf("expected key 'abc123deadbeef', got %q", strings.TrimSpace(string(keyData)))
+	}
+}
+
+func TestCmdInit_SeedWithoutKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	code := cmdInit([]string{
+		"--role", "store",
+		"--shelf", shelfPath,
+		"--name", "store1",
+		"--seed", "ocilab1:8844",
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	// Verify seed is in config.
+	configPath := filepath.Join(home, ".model-shelf", "config.toml")
+	cfg, err := meshconfig.LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if len(cfg.Seeds) != 1 || cfg.Seeds[0] != "ocilab1:8844" {
+		t.Errorf("unexpected seeds: %v", cfg.Seeds)
+	}
+
+	// No key should be written (store role, no --key).
+	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Errorf("mesh.key should not exist without --key flag for store role")
+	}
+}
