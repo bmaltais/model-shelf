@@ -90,7 +90,7 @@ func printNodesTable(nodes []daemon.MeshNode) {
 	}
 
 	// Compute column widths from content.
-	headers := []string{"NAME", "ROLES", "STATUS", "DISK FREE", "VRAM"}
+	headers := []string{"NAME", "ROLES", "STATUS", "DISK FREE", "LAST SEEN"}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = len(h)
@@ -101,7 +101,7 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		roles    string
 		status   string
 		diskFree string
-		vram     string
+		lastSeen string
 	}
 	rows := make([]row, len(nodes))
 	for i, n := range nodes {
@@ -113,9 +113,13 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		if n.DiskFreeGB > 0 {
 			diskFree = fmt.Sprintf("%.1f GB", n.DiskFreeGB)
 		}
-		vram := "-"
+		lastSeen := "-"
+		if n.LastSeen != nil {
+			elapsed := time.Since(*n.LastSeen)
+			lastSeen = formatDuration(elapsed)
+		}
 
-		rows[i] = row{n.Name, roles, status, diskFree, vram}
+		rows[i] = row{n.Name, roles, status, diskFree, lastSeen}
 
 		if len(n.Name) > widths[0] {
 			widths[0] = len(n.Name)
@@ -129,8 +133,8 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		if len(diskFree) > widths[3] {
 			widths[3] = len(diskFree)
 		}
-		if len(vram) > widths[4] {
-			widths[4] = len(vram)
+		if len(lastSeen) > widths[4] {
+			widths[4] = len(lastSeen)
 		}
 	}
 
@@ -170,9 +174,26 @@ func printNodesTable(nodes []daemon.MeshNode) {
 			truncate(r.roles, widths[1]),
 			truncate(r.status, widths[2]),
 			truncate(r.diskFree, widths[3]),
-			truncate(r.vram, widths[4]),
+			truncate(r.lastSeen, widths[4]),
 		)
 	}
+}
+
+// formatDuration returns a human-friendly "ago" string.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "just now"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 }
 
 // truncate shortens s to maxLen, adding "…" if truncated.

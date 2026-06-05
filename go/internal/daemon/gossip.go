@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	pollInterval     = 60 * time.Second
+	pollInterval     = 15 * time.Second
 	offlineThreshold = 3
 	eventPushTimeout = 5 * time.Second
 )
@@ -27,13 +27,16 @@ const (
 
 // MeshNode is the full mesh state for a node (extends NodeInfo with status).
 type MeshNode struct {
-	Name        string     `json:"name"`
-	Address     string     `json:"address"`
-	Port        int        `json:"port"`
-	Roles       []string   `json:"roles"`
-	Status      NodeStatus `json:"status"`
-	MissedPolls int        `json:"missed_polls,omitempty"`
-	DiskFreeGB  float64    `json:"disk_free_gb,omitempty"`
+	Name          string     `json:"name"`
+	Address       string     `json:"address"`
+	Port          int        `json:"port"`
+	Roles         []string   `json:"roles"`
+	Status        NodeStatus `json:"status"`
+	MissedPolls   int        `json:"missed_polls,omitempty"`
+	DiskFreeGB    float64    `json:"disk_free_gb,omitempty"`
+	DiskTotalGB   float64    `json:"disk_total_gb,omitempty"`
+	UptimeSeconds float64    `json:"uptime_seconds,omitempty"`
+	LastSeen      *time.Time `json:"last_seen,omitempty"`
 }
 
 // EventType describes what happened.
@@ -243,15 +246,16 @@ func (g *Gossip) pollLoop(ctx context.Context) {
 }
 
 func (g *Gossip) pollPeers() {
-	// Update self disk metrics first so it's included in the snapshot.
+	// Update self disk metrics and last_seen first so it's included in the snapshot.
 	if g.shelfRoot != "" {
-		_, freeGB := diskUsage(g.shelfRoot)
+		totalGB, freeGB := diskUsage(g.shelfRoot)
+		now := time.Now()
 		g.mu.Lock()
 		for i := range g.nodes {
 			if g.nodes[i].Name == g.self {
-				if g.nodes[i].DiskFreeGB != freeGB {
-					g.nodes[i].DiskFreeGB = freeGB
-				}
+				g.nodes[i].DiskFreeGB = freeGB
+				g.nodes[i].DiskTotalGB = totalGB
+				g.nodes[i].LastSeen = &now
 				break
 			}
 		}
@@ -271,6 +275,8 @@ func (g *Gossip) pollPeers() {
 		}
 		hr := g.checkHealth(nodes[i])
 		if hr.OK {
+			now := time.Now()
+			nodes[i].LastSeen = &now
 			if nodes[i].Status == StatusOffline || nodes[i].MissedPolls > 0 {
 				nodes[i].Status = StatusOnline
 				nodes[i].MissedPolls = 0
@@ -278,10 +284,22 @@ func (g *Gossip) pollPeers() {
 				transitioned = append(transitioned, nodes[i])
 				log.Printf("gossip: node %q is back online", nodes[i].Name)
 			}
+			metricsChanged := false
 			if hr.DiskFreeGB > 0 && nodes[i].DiskFreeGB != hr.DiskFreeGB {
 				nodes[i].DiskFreeGB = hr.DiskFreeGB
+				metricsChanged = true
+			}
+			if hr.DiskTotalGB > 0 && nodes[i].DiskTotalGB != hr.DiskTotalGB {
+				nodes[i].DiskTotalGB = hr.DiskTotalGB
+				metricsChanged = true
+			}
+			if hr.UptimeSeconds > 0 {
+				nodes[i].UptimeSeconds = hr.UptimeSeconds
+				metricsChanged = true
+			}
+			if metricsChanged {
 				changed = true
-				// Broadcast updated disk metrics if not already in transition list.
+				// Broadcast updated metrics if not already in transition list.
 				alreadyTransitioned := false
 				for _, t := range transitioned {
 					if t.Name == nodes[i].Name {
@@ -337,8 +355,10 @@ func (g *Gossip) pollPeers() {
 
 // healthResult holds the outcome of a health check.
 type healthResult struct {
-	OK         bool
-	DiskFreeGB float64
+	OK            bool
+	DiskFreeGB    float64
+	DiskTotalGB   float64
+	UptimeSeconds float64
 }
 
 func (g *Gossip) checkHealth(node MeshNode) healthResult {
@@ -360,12 +380,14 @@ func (g *Gossip) checkHealth(node MeshNode) healthResult {
 		return healthResult{}
 	}
 	var hr struct {
-		DiskFreeGB float64 `json:"disk_free_gb"`
+		DiskFreeGB    float64 `json:"disk_free_gb"`
+		DiskTotalGB   float64 `json:"disk_total_gb"`
+		UptimeSeconds float64 `json:"uptime_seconds"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
 		return healthResult{OK: true}
 	}
-	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB}
+	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds}
 }
 
 func (g *Gossip) pushEvent(ev Event, nodes []MeshNode) {
