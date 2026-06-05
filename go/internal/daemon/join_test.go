@@ -11,6 +11,8 @@ import (
 )
 
 func TestJoinEndpoint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg := &meshconfig.Config{
 		Name:      "controller-node",
 		Port:      8844,
@@ -60,19 +62,30 @@ func TestJoinEndpoint(t *testing.T) {
 		t.Errorf("expected node name 'controller-node', got %q", resp.Nodes[0].Name)
 	}
 
-	// Verify the new node was registered.
-	if len(d.nodes) != 2 {
-		t.Fatalf("expected 2 nodes after join, got %d", len(d.nodes))
+	// Verify the new node was registered in gossip state.
+	gossipNodes := d.gossip.Nodes()
+	if len(gossipNodes) != 2 {
+		t.Fatalf("expected 2 nodes in gossip after join, got %d", len(gossipNodes))
 	}
-	if d.nodes[1].Name != "store-node" {
-		t.Errorf("expected second node 'store-node', got %q", d.nodes[1].Name)
+	// Find the store-node in gossip state.
+	var found bool
+	for _, n := range gossipNodes {
+		if n.Name == "store-node" {
+			found = true
+			if n.Address != "192.168.1.10" {
+				t.Errorf("expected address '192.168.1.10', got %q", n.Address)
+			}
+			break
+		}
 	}
-	if d.nodes[1].Address != "192.168.1.10" {
-		t.Errorf("expected address '192.168.1.10', got %q", d.nodes[1].Address)
+	if !found {
+		t.Errorf("store-node not found in gossip state: %+v", gossipNodes)
 	}
 }
 
 func TestJoinEndpoint_Unauthorized(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg := &meshconfig.Config{
 		Name:    "controller-node",
 		Port:    8844,
@@ -100,6 +113,8 @@ func TestJoinEndpoint_Unauthorized(t *testing.T) {
 }
 
 func TestJoinEndpoint_MethodNotAllowed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}}
 	d := New(cfg)
 
@@ -113,6 +128,8 @@ func TestJoinEndpoint_MethodNotAllowed(t *testing.T) {
 }
 
 func TestJoinEndpoint_InvalidBody(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}}
 	d := New(cfg)
 
@@ -126,6 +143,8 @@ func TestJoinEndpoint_InvalidBody(t *testing.T) {
 }
 
 func TestJoinEndpoint_MissingFields(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}}
 	d := New(cfg)
 
