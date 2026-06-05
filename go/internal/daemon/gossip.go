@@ -103,7 +103,7 @@ func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime ti
 		if !found {
 			persisted = append([]MeshNode{selfNode}, persisted...)
 		}
-		g.nodes = persisted
+		g.nodes = deduplicateByAddress(persisted)
 	} else {
 		g.nodes = []MeshNode{selfNode}
 	}
@@ -157,6 +157,38 @@ func (g *Gossip) evictByAddressLocked(name, address string, port int) {
 		filtered = append(filtered, n)
 	}
 	g.nodes = filtered
+}
+
+// deduplicateByAddress removes duplicate address:port entries from a node list,
+// keeping the last occurrence (which is the most recently added/updated entry).
+// Used at load time and when setting nodes wholesale to prevent persisted ghosts.
+func deduplicateByAddress(nodes []MeshNode) []MeshNode {
+	type addrKey struct {
+		address string
+		port    int
+	}
+	// Walk in reverse so the last entry for each address wins.
+	seen := make(map[addrKey]bool, len(nodes))
+	// First pass: mark which indices to keep (last occurrence per address).
+	keep := make([]bool, len(nodes))
+	for i := len(nodes) - 1; i >= 0; i-- {
+		if nodes[i].Address == "" {
+			keep[i] = true
+			continue
+		}
+		k := addrKey{nodes[i].Address, nodes[i].Port}
+		if !seen[k] {
+			seen[k] = true
+			keep[i] = true
+		}
+	}
+	result := make([]MeshNode, 0, len(nodes))
+	for i, n := range nodes {
+		if keep[i] {
+			result = append(result, n)
+		}
+	}
+	return result
 }
 
 // AddNode adds or updates a node and pushes a join event to peers.
@@ -252,7 +284,7 @@ func (g *Gossip) ApplyEvent(ev Event) {
 func (g *Gossip) SetNodes(nodes []MeshNode) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.nodes = nodes
+	g.nodes = deduplicateByAddress(nodes)
 	g.persistLocked()
 }
 
