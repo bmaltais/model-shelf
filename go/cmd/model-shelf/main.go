@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/alexziskind1/model-shelf/internal/config"
+	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/detect"
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 	"github.com/alexziskind1/model-shelf/internal/search"
 )
@@ -32,6 +34,8 @@ func main() {
 		os.Exit(cmdFind(os.Args[2:]))
 	case "list":
 		os.Exit(cmdList(os.Args[2:]))
+	case "daemon":
+		os.Exit(cmdDaemon(os.Args[2:]))
 	case "version", "--version", "-v":
 		fmt.Printf("model-shelf %s (go)\n", version)
 		os.Exit(0)
@@ -53,6 +57,7 @@ Usage:
   model-shelf resolve <repo_id>        Resolve a model to a local path
   model-shelf find <query>             Search Hugging Face for models
   model-shelf list                     List shelf contents
+  model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf version                  Print version
 
 Resolve flags:
@@ -66,6 +71,9 @@ Find flags:
   --format <F>       Filter results by format
   --limit <N>        Max results (default: 10)
   --json             Emit JSON output
+
+Daemon flags:
+  --port <N>         Override listen port (default: 8844)
 `, version)
 }
 
@@ -403,4 +411,36 @@ func fmtSize(n int64) string {
 		size /= 1024
 	}
 	return fmt.Sprintf("%.1f TB", size)
+}
+
+func cmdDaemon(args []string) int {
+	_, flags := parseFlags(args)
+
+	// Load mesh config.
+	if !meshconfig.Exists() {
+		fmt.Fprintf(os.Stderr, "error: mesh not configured. Run `model-shelf init --role <roles> --shelf <path>` first.\n")
+		return 1
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Override port from flag.
+	if portStr, ok := flags["port"]; ok {
+		var port int
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port <= 0 || port > 65535 {
+			fmt.Fprintf(os.Stderr, "error: --port must be a valid port number (1-65535), got %q\n", portStr)
+			return 1
+		}
+		cfg.Port = port
+	}
+
+	d := daemon.New(cfg)
+	if err := d.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
 }
