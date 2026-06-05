@@ -257,11 +257,36 @@ func TestExtractQuant(t *testing.T) {
 		{"model-Q8_0.gguf", "Q8_0"},
 		{"some-model-IQ4_XS.gguf", "IQ4_XS"},
 		{"model-F16.gguf", "F16"},
+		// Dot-delimited quant.
+		{"model.v1.0.Q4_K_M.gguf", "Q4_K_M"},
+		// Lowercase quant (normalized to uppercase).
+		{"model-q4_k_m.gguf", "Q4_K_M"},
+		// Lowercase dot-delimited.
+		{"model.v2.q8_0.gguf", "Q8_0"},
+		// Ensure "Qwen" is not misidentified as a quant.
+		{"Qwen-14B-Q4_K_M.gguf", "Q4_K_M"},
 	}
 	for _, tc := range tests {
 		got := extractQuant(tc.filename)
 		if got != tc.want {
 			t.Errorf("extractQuant(%q) = %q, want %q", tc.filename, got, tc.want)
 		}
+	}
+}
+
+func TestLooksLikeQuant_RejectsNonQuant(t *testing.T) {
+	// "Qwen" should not be mistaken for a quant label.
+	if looksLikeQuant("Qwen") {
+		t.Error("looksLikeQuant(\"Qwen\") should be false")
+	}
+	if looksLikeQuant("Qwen3") {
+		t.Error("looksLikeQuant(\"Qwen3\") should be false")
+	}
+	// But actual quants should match.
+	if !looksLikeQuant("Q4_K_M") {
+		t.Error("looksLikeQuant(\"Q4_K_M\") should be true")
+	}
+	if !looksLikeQuant("IQ4_XS") {
+		t.Error("looksLikeQuant(\"IQ4_XS\") should be true")
 	}
 }

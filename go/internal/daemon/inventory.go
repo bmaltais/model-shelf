@@ -23,9 +23,10 @@ type InventoryEntry struct {
 }
 
 // Key returns the unique identity for this entry: repo_id + format + quant.
+// Quant is uppercased to ensure stable keys regardless of filename casing.
 func (e *InventoryEntry) Key() string {
 	if e.Quant != "" {
-		return e.RepoID + "|" + e.Format + "|" + e.Quant
+		return e.RepoID + "|" + e.Format + "|" + strings.ToUpper(e.Quant)
 	}
 	return e.RepoID + "|" + e.Format
 }
@@ -107,11 +108,12 @@ func (inv *Inventory) Entries() []InventoryEntry {
 
 // Touch updates the last-accessed timestamp for a model. If the model is not
 // in the inventory, it is added with the current timestamp.
+// Quant is normalized to uppercase for consistent keying.
 func (inv *Inventory) Touch(repoID, format, quant string, sizeBytes int64) {
 	entry := &InventoryEntry{
 		RepoID:       repoID,
 		Format:       format,
-		Quant:        quant,
+		Quant:        strings.ToUpper(quant),
 		SizeBytes:    sizeBytes,
 		LastAccessed: time.Now(),
 	}
@@ -129,8 +131,9 @@ func (inv *Inventory) Touch(repoID, format, quant string, sizeBytes int64) {
 }
 
 // Remove deletes an entry from the inventory.
+// Quant is normalized to uppercase to match the stored key.
 func (inv *Inventory) Remove(repoID, format, quant string) {
-	entry := &InventoryEntry{RepoID: repoID, Format: format, Quant: quant}
+	entry := &InventoryEntry{RepoID: repoID, Format: format, Quant: strings.ToUpper(quant)}
 	inv.mu.Lock()
 	delete(inv.entries, entry.Key())
 	inv.mu.Unlock()
@@ -288,37 +291,54 @@ func dirSizeBytes(path string) int64 {
 
 // extractQuant attempts to derive the quantization string from a GGUF filename.
 // Example: "Qwen3-14B-Q4_K_M.gguf" -> "Q4_K_M"
+// Handles dot-delimited names (e.g. "model.v1.0.Q4_K_M.gguf") and normalizes
+// the result to uppercase for stable identity keys.
 func extractQuant(filename string) string {
-	// Strip .gguf extension.
-	name := strings.TrimSuffix(filename, ".gguf")
-	name = strings.TrimSuffix(name, ".GGUF")
+	// Strip .gguf extension (case-insensitive).
+	name := filename
+	if strings.HasSuffix(strings.ToLower(name), ".gguf") {
+		name = name[:len(name)-5]
+	}
+
+	// Split on both dashes and dots to handle varied naming conventions.
+	// Replace dots with dashes, then split on dashes.
+	normalized := strings.ReplaceAll(name, ".", "-")
+	parts := strings.Split(normalized, "-")
 
 	// Common quant patterns: Q4_K_M, Q5_K_S, Q8_0, IQ4_XS, etc.
 	// Look for the last segment that matches a quant pattern.
-	parts := strings.Split(name, "-")
 	for i := len(parts) - 1; i >= 0; i-- {
 		p := parts[i]
 		if looksLikeQuant(p) {
 			// Include any subsequent parts that are also quant-like
 			// (handles multi-segment quants like "Q4_K_M").
-			return strings.Join(parts[i:], "-")
+			result := strings.Join(parts[i:], "-")
+			return strings.ToUpper(result)
 		}
 	}
 
-	// Fallback: use the last segment after the last dash.
+	// Fallback: use the last segment after the last dash, uppercased.
 	if len(parts) > 1 {
-		return parts[len(parts)-1]
+		return strings.ToUpper(parts[len(parts)-1])
 	}
-	return name
+	return strings.ToUpper(name)
 }
 
 // looksLikeQuant returns true if a string looks like a GGUF quantization label.
+// Requires Q<digit>, IQ<digit>, or exact matches for F16/F32/BF16 to avoid
+// false positives on names like "Qwen".
 func looksLikeQuant(s string) bool {
 	upper := strings.ToUpper(s)
-	// Common prefixes: Q, IQ, F, BF
-	if strings.HasPrefix(upper, "Q") || strings.HasPrefix(upper, "IQ") ||
-		strings.HasPrefix(upper, "F16") || strings.HasPrefix(upper, "F32") ||
-		strings.HasPrefix(upper, "BF16") {
+	// Q followed by a digit: Q4_K_M, Q8_0, Q5_K_S, etc.
+	if len(upper) >= 2 && upper[0] == 'Q' && upper[1] >= '0' && upper[1] <= '9' {
+		return true
+	}
+	// IQ followed by a digit: IQ4_XS, IQ3_M, etc.
+	if len(upper) >= 3 && strings.HasPrefix(upper, "IQ") && upper[2] >= '0' && upper[2] <= '9' {
+		return true
+	}
+	// Exact float format labels.
+	if upper == "F16" || upper == "F32" || upper == "BF16" {
 		return true
 	}
 	return false
