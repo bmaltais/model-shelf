@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -40,38 +38,9 @@ func cmdNodes(args []string) int {
 	}
 
 	// Query local daemon.
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/nodes", cfg.Port)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	nodes, err := fetchNodes(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	if cfg.MeshKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "daemon not running — start with `model-shelf service start` (%v)\n", err)
-		return 1
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: reading response: %v\n", err)
-		return 1
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "error: daemon returned %d: %s\n", resp.StatusCode, string(body))
-		return 1
-	}
-
-	var nodes []daemon.MeshNode
-	if err := json.Unmarshal(body, &nodes); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid response from daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
 

@@ -44,6 +44,8 @@ func main() {
 		os.Exit(cmdLeave(os.Args[2:]))
 	case "nodes":
 		os.Exit(cmdNodes(os.Args[2:]))
+	case "inventory":
+		os.Exit(cmdInventory(os.Args[2:]))
 	case "role":
 		os.Exit(cmdRole(os.Args[2:]))
 	case "service":
@@ -72,6 +74,7 @@ Usage:
   model-shelf find <query>             Search Hugging Face for models
   model-shelf list                     List shelf contents
   model-shelf nodes [--json]            List mesh nodes
+  model-shelf inventory [--json]        List models across all mesh nodes
   model-shelf role <set|add|remove>    Manage node roles
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
