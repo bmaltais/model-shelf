@@ -303,6 +303,8 @@ func cmdInit(args []string) int {
 	} else {
 		fmt.Println("model-shelf: no mesh key generated (non-controller node)")
 		fmt.Println("  This node will receive the mesh key when joining via: model-shelf join <peer>")
+		fmt.Println("")
+		fmt.Println("  ⚠ The daemon will run without mesh authentication until this node joins a mesh.")
 	}
 
 	if len(created) == 0 {

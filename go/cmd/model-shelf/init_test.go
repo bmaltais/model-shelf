@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
@@ -222,15 +224,31 @@ func TestCmdInit_StoreRoleDoesNotGenerateKey(t *testing.T) {
 	t.Setenv("HOME", home)
 	shelfPath := filepath.Join(t.TempDir(), "models")
 
+	// Capture stdout to verify guidance message.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
 	code := cmdInit([]string{"--role", "store", "--shelf", shelfPath, "--name", "node1"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+	output := string(outBytes)
+
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
 
 	// Verify no mesh.key was created for non-controller role.
 	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
-	if _, err := os.Stat(keyPath); err == nil {
-		t.Errorf("mesh.key should not be created for store-only role")
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Errorf("mesh.key should not exist for store-only role, got err: %v", err)
+	}
+
+	// Verify guidance message is printed.
+	if !strings.Contains(output, "model-shelf join <peer>") {
+		t.Errorf("expected join guidance in output, got:\n%s", output)
 	}
 }
 
@@ -239,14 +257,30 @@ func TestCmdInit_ExecutorRoleDoesNotGenerateKey(t *testing.T) {
 	t.Setenv("HOME", home)
 	shelfPath := filepath.Join(t.TempDir(), "models")
 
+	// Capture stdout to verify guidance message.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
 	code := cmdInit([]string{"--role", "executor", "--shelf", shelfPath, "--name", "node1"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+	output := string(outBytes)
+
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
 
 	// Verify no mesh.key was created for non-controller role.
 	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
-	if _, err := os.Stat(keyPath); err == nil {
-		t.Errorf("mesh.key should not be created for executor-only role")
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Errorf("mesh.key should not exist for executor-only role, got err: %v", err)
+	}
+
+	// Verify guidance message is printed.
+	if !strings.Contains(output, "model-shelf join <peer>") {
+		t.Errorf("expected join guidance in output, got:\n%s", output)
 	}
 }
