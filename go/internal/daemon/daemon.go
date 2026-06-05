@@ -24,6 +24,7 @@ type Daemon struct {
 	startTime time.Time
 	server    *http.Server
 	gossip    *Gossip
+	inventory *Inventory
 }
 
 // HealthResponse is returned by GET /v1/health.
@@ -78,6 +79,23 @@ func New(cfg *meshconfig.Config) *Daemon {
 		LastSeen:    &now,
 	}
 	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot, d.startTime)
+
+	// Load or create inventory and scan shelf.
+	inv, err := LoadInventory()
+	if err != nil {
+		log.Printf("model-shelf daemon: failed to load inventory: %v (starting fresh)", err)
+		inv = NewInventory()
+	}
+	if cfg.ShelfRoot != "" {
+		if err := inv.ScanShelf(cfg.ShelfRoot); err != nil {
+			log.Printf("model-shelf daemon: inventory scan error: %v", err)
+		}
+		if err := inv.Save(); err != nil {
+			log.Printf("model-shelf daemon: failed to persist inventory: %v", err)
+		}
+	}
+	d.inventory = inv
+
 	return d
 }
 
@@ -88,6 +106,7 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/join", d.handleJoin)
 	mux.HandleFunc("/v1/nodes", d.handleNodes)
 	mux.HandleFunc("/v1/events", d.handleEvents)
+	mux.HandleFunc("/v1/inventory", d.handleInventory)
 
 	handler := d.authMiddleware(mux)
 
@@ -243,6 +262,22 @@ func (d *Daemon) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok": true}`))
+}
+
+func (d *Daemon) handleInventory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	entries := d.inventory.Entries()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
+}
+
+// GetInventory returns the daemon's inventory (used by resolve to touch models).
+func (d *Daemon) GetInventory() *Inventory {
+	return d.inventory
 }
 
 // authMiddleware checks the mesh key on all /v1/ requests.
