@@ -110,13 +110,9 @@ func aggregateInventory(nodes []daemon.MeshNode, cfg *meshconfig.Config) []Inven
 	for _, node := range nodes {
 		entries, stale := fetchNodeInventory(node, cfg)
 		for _, e := range entries {
-			model := e.RepoID
-			if e.Quant != "" {
-				model += ":" + e.Quant
-			}
 			rows = append(rows, InventoryRow{
 				Node:      node.Name,
-				RepoID:    model,
+				RepoID:    e.RepoID,
 				Quant:     e.Quant,
 				Format:    e.Format,
 				SizeBytes: e.SizeBytes,
@@ -128,7 +124,8 @@ func aggregateInventory(nodes []daemon.MeshNode, cfg *meshconfig.Config) []Inven
 }
 
 // fetchNodeInventory queries a single node's /v1/inventory endpoint.
-// Returns the entries and whether the data is stale (node offline, data from cache).
+// Returns the entries and whether the node was unreachable (stale=true means
+// the node was offline or the request failed; no cached data is returned).
 func fetchNodeInventory(node daemon.MeshNode, cfg *meshconfig.Config) ([]daemon.InventoryEntry, bool) {
 	if node.Status == daemon.StatusOffline {
 		// Node offline — skip (no cached inventory per-node available via API).
@@ -164,7 +161,7 @@ func fetchNodeInventory(node daemon.MeshNode, cfg *meshconfig.Config) ([]daemon.
 
 func printInventoryTable(rows []InventoryRow) {
 	if len(rows) == 0 {
-		fmt.Println("No models in mesh.")
+		fmt.Println("No models reported by online nodes.")
 		return
 	}
 
@@ -194,9 +191,14 @@ func printInventoryTable(rows []InventoryRow) {
 		if r.Stale {
 			nodeName += " (stale)"
 		}
+		// Build combined model display string (repo_id:quant) for table output.
+		model := r.RepoID
+		if r.Quant != "" {
+			model += ":" + r.Quant
+		}
 		tRows[i] = tableRow{
 			node:   nodeName,
-			model:  r.RepoID,
+			model:  model,
 			format: r.Format,
 			size:   fmtSize(r.SizeBytes),
 		}
@@ -235,10 +237,14 @@ func printInventoryTable(rows []InventoryRow) {
 		totalContent--
 	}
 
-	// Print header.
+	// Print header (truncate headers to column width for narrow terminals).
 	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds\n",
 		widths[0], widths[1], widths[2], widths[3])
-	fmt.Printf(fmtStr, headers[0], headers[1], headers[2], headers[3])
+	fmt.Printf(fmtStr,
+		truncate(headers[0], widths[0]),
+		truncate(headers[1], widths[1]),
+		truncate(headers[2], widths[2]),
+		truncate(headers[3], widths[3]))
 
 	// Print rows grouped by node.
 	for _, r := range tRows {

@@ -104,10 +104,10 @@ func TestCmdInventory_JSON(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 rows, got %d: %s", len(got), output)
 	}
-	if got[0].Node != "node1" || got[0].RepoID != "meta-llama/Llama-3-8B:Q4_K_M" {
+	if got[0].Node != "node1" || got[0].RepoID != "meta-llama/Llama-3-8B" || got[0].Quant != "Q4_K_M" {
 		t.Errorf("unexpected row 0: %+v", got[0])
 	}
-	if got[1].Node != "node2" || got[1].RepoID != "mlx-community/Phi-3" {
+	if got[1].Node != "node2" || got[1].RepoID != "mlx-community/Phi-3" || got[1].Quant != "" {
 		t.Errorf("unexpected row 1: %+v", got[1])
 	}
 	if got[0].Stale || got[1].Stale {
@@ -334,8 +334,8 @@ func TestCmdInventory_Empty(t *testing.T) {
 	buf.ReadFrom(r)
 	output := buf.String()
 
-	if !strings.Contains(output, "No models in mesh") {
-		t.Errorf("expected 'No models in mesh' message, got:\n%s", output)
+	if !strings.Contains(output, "No models reported by online nodes") {
+		t.Errorf("expected 'No models reported by online nodes' message, got:\n%s", output)
 	}
 }
 
