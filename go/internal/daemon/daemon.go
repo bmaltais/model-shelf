@@ -64,14 +64,16 @@ func New(cfg *meshconfig.Config) *Daemon {
 		startTime: time.Now(),
 	}
 	// Register self as a node.
+	_, freeGB := diskUsage(cfg.ShelfRoot)
 	selfNode := MeshNode{
-		Name:    cfg.Name,
-		Address: meshconfig.GetHostname(),
-		Roles:   cfg.Roles,
-		Port:    cfg.Port,
-		Status:  StatusOnline,
+		Name:       cfg.Name,
+		Address:    meshconfig.GetHostname(),
+		Roles:      cfg.Roles,
+		Port:       cfg.Port,
+		Status:     StatusOnline,
+		DiskFreeGB: freeGB,
 	}
-	d.gossip = NewGossip(selfNode, cfg.MeshKey)
+	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot)
 	return d
 }
 

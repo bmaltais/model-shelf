@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/relocate"
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 )
@@ -102,6 +103,8 @@ func BootstrapDefaultConfig(path string) (string, error) {
 }
 
 // LoadConfig loads configuration with full discovery logic.
+// It checks for a mesh config (~/.model-shelf/config.toml) first —
+// if it exists, shelf_root is read from there, avoiding legacy config creation.
 func LoadConfig(path string) (*resolver.Config, error) {
 	cfg, err := loadRaw(path)
 	if err != nil {
@@ -136,6 +139,15 @@ func loadRaw(path string) (*resolver.Config, error) {
 		}
 		return readConfig(bootstrapped)
 	}
+	// Check mesh config first — if it exists, use its shelf_root
+	// to avoid creating a legacy config at ~/.config/model-shelf/.
+	if meshconfig.Exists() {
+		meshCfg, err := loadFromMeshConfig()
+		if err != nil {
+			return nil, fmt.Errorf("mesh config exists but cannot be loaded: %w", err)
+		}
+		return meshCfg, nil
+	}
 	userCfg := UserConfigPath()
 	if _, err := os.Stat(userCfg); err == nil {
 		return readConfig(userCfg)
@@ -145,4 +157,21 @@ func loadRaw(path string) (*resolver.Config, error) {
 		return nil, err
 	}
 	return readConfig(bootstrapped)
+}
+
+// loadFromMeshConfig loads resolver config from the mesh config
+// (~/.model-shelf/config.toml). Caller must verify meshconfig.Exists() first.
+// Returns an error if the config cannot be parsed or has no shelf_root.
+func loadFromMeshConfig() (*resolver.Config, error) {
+	mc, err := meshconfig.Load()
+	if err != nil {
+		return nil, err
+	}
+	if mc.ShelfRoot == "" {
+		return nil, fmt.Errorf("mesh config has no shelf_root")
+	}
+	return &resolver.Config{
+		ShelfRoot:      mc.ShelfRoot,
+		AllowDownloads: true,
+	}, nil
 }

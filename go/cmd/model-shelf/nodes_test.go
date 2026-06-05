@@ -21,7 +21,7 @@ func TestCmdNodes_JSON(t *testing.T) {
 
 	// Start a fake daemon.
 	nodes := []daemon.MeshNode{
-		{Name: "node1", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller", "store"}, Status: daemon.StatusOnline},
+		{Name: "node1", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller", "store"}, Status: daemon.StatusOnline, DiskFreeGB: 752.95},
 		{Name: "node2", Address: "10.0.0.2", Port: 8844, Roles: []string{"executor"}, Status: daemon.StatusOffline},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +74,9 @@ func TestCmdNodes_JSON(t *testing.T) {
 	if got[0].Name != "node1" || got[1].Name != "node2" {
 		t.Errorf("unexpected node names: %v", got)
 	}
+	if got[0].DiskFreeGB != 752.95 {
+		t.Errorf("expected node1 disk_free_gb=752.95, got %f", got[0].DiskFreeGB)
+	}
 	if got[1].Status != daemon.StatusOffline {
 		t.Errorf("expected node2 offline, got %s", got[1].Status)
 	}
@@ -84,7 +87,7 @@ func TestCmdNodes_Table(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	nodes := []daemon.MeshNode{
-		{Name: "ctrl", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline},
+		{Name: "ctrl", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline, DiskFreeGB: 500.5},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/nodes" && r.Method == http.MethodGet {
@@ -137,6 +140,9 @@ func TestCmdNodes_Table(t *testing.T) {
 	}
 	if !strings.Contains(output, "online") {
 		t.Errorf("missing status in output:\n%s", output)
+	}
+	if !strings.Contains(output, "500.5 GB") {
+		t.Errorf("missing disk free value in output:\n%s", output)
 	}
 }
 

@@ -108,8 +108,11 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		roles := strings.Join(n.Roles, ",")
 		status := string(n.Status)
 
-		// Disk and VRAM not yet propagated via gossip — show "-".
+		// Format disk free from gossip state.
 		diskFree := "-"
+		if n.DiskFreeGB > 0 {
+			diskFree = fmt.Sprintf("%.1f GB", n.DiskFreeGB)
+		}
 		vram := "-"
 
 		rows[i] = row{n.Name, roles, status, diskFree, vram}
