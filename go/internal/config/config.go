@@ -121,7 +121,10 @@ func LoadConfig(path string) (*resolver.Config, error) {
 func loadRaw(path string) (*resolver.Config, error) {
 	if path != "" {
 		if _, err := os.Stat(path); err != nil {
-			return nil, fmt.Errorf("config file not found: %s", path)
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("config file not found: %s", path)
+			}
+			return nil, fmt.Errorf("cannot access config file %s: %w", path, err)
 		}
 		return readConfig(path)
 	}

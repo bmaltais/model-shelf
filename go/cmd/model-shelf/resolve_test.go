@@ -84,7 +84,8 @@ func TestCmdResolve_ExplicitConfigNotFound(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	code := cmdResolve([]string{"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M", "--no-download", "--config", "/tmp/nonexistent-" + t.Name() + ".toml"})
+	missingCfg := filepath.Join(t.TempDir(), "nonexistent", "config.toml")
+	code := cmdResolve([]string{"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M", "--no-download", "--config", missingCfg})
 
 	w.Close()
 	os.Stderr = oldErr

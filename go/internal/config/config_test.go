@@ -11,7 +11,8 @@ func TestLoadConfig_ExplicitPathNotFound(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	_, err := LoadConfig("/tmp/does-not-exist-" + t.Name() + ".toml")
+	missingCfg := filepath.Join(t.TempDir(), "subdir", "missing.toml")
+	_, err := LoadConfig(missingCfg)
 	if err == nil {
 		t.Fatal("expected error when explicit config path does not exist")
 	}
@@ -24,7 +25,8 @@ func TestLoadConfig_ExplicitPathNonExistentParent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	_, err := LoadConfig("/nonexistent/parent/config.toml")
+	missingCfg := filepath.Join(t.TempDir(), "no-such-parent", "deep", "config.toml")
+	_, err := LoadConfig(missingCfg)
 	if err == nil {
 		t.Fatal("expected error when explicit config path parent does not exist")
 	}
