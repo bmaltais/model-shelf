@@ -77,6 +77,51 @@ func TestCmdJoin_Success(t *testing.T) {
 	if len(updatedCfg.Seeds) != 1 || updatedCfg.Seeds[0] != peerAddr {
 		t.Errorf("expected seed %q, got %v", peerAddr, updatedCfg.Seeds)
 	}
+
+	// Verify mesh state was persisted.
+	statePath := filepath.Join(home, ".model-shelf", "state", "mesh.json")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("mesh.json not written: %v", err)
+	}
+	var nodes []daemon.MeshNode
+	if err := json.Unmarshal(stateData, &nodes); err != nil {
+		t.Fatalf("invalid mesh.json: %v", err)
+	}
+	// Should contain self + the controller node from the peer response.
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes in mesh.json, got %d: %+v", len(nodes), nodes)
+	}
+	// Build a lookup by name for assertions.
+	nodeByName := map[string]daemon.MeshNode{}
+	for _, n := range nodes {
+		nodeByName[n.Name] = n
+	}
+	// Verify self node.
+	self, ok := nodeByName["joining-node"]
+	if !ok {
+		t.Fatalf("mesh.json missing self (joining-node): %+v", nodes)
+	}
+	if self.Port != 8844 || self.Status != daemon.StatusOnline {
+		t.Errorf("self node: unexpected port=%d status=%s", self.Port, self.Status)
+	}
+	if len(self.Roles) != 1 || self.Roles[0] != "store" {
+		t.Errorf("self node: unexpected roles=%v", self.Roles)
+	}
+	// Verify peer node.
+	peer, ok := nodeByName["controller"]
+	if !ok {
+		t.Fatalf("mesh.json missing peer (controller): %+v", nodes)
+	}
+	if peer.Address != "10.0.0.1" || peer.Port != 8844 {
+		t.Errorf("peer node: unexpected address=%s port=%d", peer.Address, peer.Port)
+	}
+	if peer.Status != daemon.StatusOnline {
+		t.Errorf("peer node: unexpected status=%s", peer.Status)
+	}
+	if len(peer.Roles) != 1 || peer.Roles[0] != "controller" {
+		t.Errorf("peer node: unexpected roles=%v", peer.Roles)
+	}
 }
 
 func TestCmdJoin_RequiresPeer(t *testing.T) {

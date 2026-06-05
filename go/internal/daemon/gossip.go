@@ -358,7 +358,7 @@ func (g *Gossip) persist() {
 	copy(nodes, g.nodes)
 	g.mu.RUnlock()
 
-	if err := saveMeshState(nodes); err != nil {
+	if err := SaveMeshState(nodes); err != nil {
 		log.Printf("gossip: failed to persist state: %v", err)
 	}
 }
@@ -367,7 +367,7 @@ func (g *Gossip) persistLocked() {
 	nodes := make([]MeshNode, len(g.nodes))
 	copy(nodes, g.nodes)
 
-	if err := saveMeshState(nodes); err != nil {
+	if err := SaveMeshState(nodes); err != nil {
 		log.Printf("gossip: failed to persist state: %v", err)
 	}
 }
