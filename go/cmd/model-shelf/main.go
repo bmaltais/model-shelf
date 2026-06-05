@@ -179,7 +179,13 @@ func cmdResolve(args []string) int {
 		format = resolver.DetectFormat(repoID)
 	}
 
-	result, err := resolver.ResolveModel(cfg, repoID, format, flags["quant"])
+	quant := flags["quant"]
+	if quant != "" && format != "gguf" {
+		fmt.Fprintf(os.Stderr, "warning: --quant is only used for gguf format, ignoring\n")
+		quant = ""
+	}
+
+	result, err := resolver.ResolveModel(cfg, repoID, format, quant)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -419,13 +425,25 @@ func cmdFind(args []string) int {
 	return 0
 }
 
+// ShelfEntry represents a single model in the shelf for JSON output.
+type ShelfEntry struct {
+	RepoID    string `json:"repo_id"`
+	Format    string `json:"format"`
+	SizeBytes int64  `json:"size_bytes"`
+	Path      string `json:"path"`
+}
+
 func cmdList(args []string) int {
 	_, flags := parseFlags(args)
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf list [--config <path>]")
+		fmt.Println("Usage: model-shelf list [--json] [--config <path>]")
 		fmt.Println()
 		fmt.Println("List shelf contents.")
+		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --json             Emit JSON output")
+		fmt.Println("  --config <path>    Override config file path")
 		return 0
 	}
 
@@ -440,25 +458,30 @@ func cmdList(args []string) int {
 		return 1
 	}
 
+	if flags["json"] == "true" {
+		entries := collectShelfEntries(cfg.ShelfRoot)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(entries)
+		return 0
+	}
+
 	printShelfContents(cfg.ShelfRoot)
 	return 0
 }
 
-func printShelfContents(root string) {
+func collectShelfEntries(root string) []ShelfEntry {
+	var entries []ShelfEntry
 	for _, format := range resolver.SupportedFormats {
 		sub := filepath.Join(root, format)
-		fmt.Printf("\n  %s/\n", format)
 		info, err := os.Stat(sub)
 		if err != nil || !info.IsDir() {
-			fmt.Println("    (empty)")
 			continue
 		}
 		publishers, err := os.ReadDir(sub)
 		if err != nil {
-			fmt.Println("    (error reading)")
 			continue
 		}
-		hasContent := false
 		for _, pub := range publishers {
 			if !pub.IsDir() || strings.HasPrefix(pub.Name(), ".") {
 				continue
@@ -473,12 +496,34 @@ func printShelfContents(root string) {
 				}
 				repoPath := filepath.Join(sub, pub.Name(), repo.Name())
 				size := dirSize(repoPath)
-				fmt.Printf("    %s/%s  %s\n", pub.Name(), repo.Name(), fmtSize(size))
-				hasContent = true
+				entries = append(entries, ShelfEntry{
+					RepoID:    pub.Name() + "/" + repo.Name(),
+					Format:    format,
+					SizeBytes: size,
+					Path:      repoPath,
+				})
 			}
 		}
-		if !hasContent {
+	}
+	return entries
+}
+
+func printShelfContents(root string) {
+	entries := collectShelfEntries(root)
+	// Group entries by format for display.
+	byFormat := make(map[string][]ShelfEntry)
+	for _, e := range entries {
+		byFormat[e.Format] = append(byFormat[e.Format], e)
+	}
+	for _, format := range resolver.SupportedFormats {
+		fmt.Printf("\n  %s/\n", format)
+		group := byFormat[format]
+		if len(group) == 0 {
 			fmt.Println("    (empty)")
+			continue
+		}
+		for _, e := range group {
+			fmt.Printf("    %s  %s\n", e.RepoID, fmtSize(e.SizeBytes))
 		}
 	}
 }
