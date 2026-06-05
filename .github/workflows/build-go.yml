@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+    paths:
+      - 'go/**'
+  pull_request:
+    paths:
+      - 'go/**'
   workflow_dispatch:
 
 permissions:
