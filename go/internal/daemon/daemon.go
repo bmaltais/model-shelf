@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ type Daemon struct {
 	cfg       *meshconfig.Config
 	startTime time.Time
 	server    *http.Server
+	mu        sync.Mutex
 	nodes     []NodeInfo
 }
 
@@ -65,9 +67,10 @@ func New(cfg *meshconfig.Config) *Daemon {
 	}
 	// Register self as a node.
 	d.nodes = []NodeInfo{{
-		Name:  cfg.Name,
-		Roles: cfg.Roles,
-		Port:  cfg.Port,
+		Name:    cfg.Name,
+		Address: meshconfig.GetHostname(),
+		Roles:   cfg.Roles,
+		Port:    cfg.Port,
 	}}
 	return d
 }
@@ -135,14 +138,19 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 	var req JoinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error": "invalid request body"}`, http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "invalid request body"}`))
 		return
 	}
-	if req.Name == "" || req.Port == 0 {
-		http.Error(w, `{"error": "name and port are required"}`, http.StatusBadRequest)
+	if req.Name == "" || req.Port == 0 || req.Address == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "name, address, and port are required"}`))
 		return
 	}
 
+	d.mu.Lock()
 	// Return existing nodes (before adding the new one) as bootstrap state.
 	existingNodes := make([]NodeInfo, len(d.nodes))
 	copy(existingNodes, d.nodes)
@@ -154,6 +162,7 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Port:    req.Port,
 		Roles:   req.Roles,
 	})
+	d.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(JoinResponse{

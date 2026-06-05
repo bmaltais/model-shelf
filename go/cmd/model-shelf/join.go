@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -87,19 +88,23 @@ func cmdJoin(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: invalid response from peer: %v\n", err)
 		return 1
 	}
-
-	// Store mesh key locally.
-	if err := meshconfig.WriteMeshKey(meshKey); err != nil {
-		fmt.Fprintf(os.Stderr, "error: failed to store mesh key: %v\n", err)
+	if !joinResp.OK {
+		fmt.Fprintf(os.Stderr, "error: peer rejected join request\n")
 		return 1
 	}
 
-	// Store peer address as seed in config.
+	// Store peer address as seed in config first (atomic-ish: config before key).
 	if !containsSeed(cfg.Seeds, peerAddr) {
 		cfg.Seeds = append(cfg.Seeds, peerAddr)
 	}
 	if err := meshconfig.Write(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to update config: %v\n", err)
+		return 1
+	}
+
+	// Store mesh key locally (after config succeeds).
+	if err := meshconfig.WriteMeshKey(meshKey); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to store mesh key: %v\n", err)
 		return 1
 	}
 
@@ -116,11 +121,20 @@ func cmdJoin(args []string) int {
 }
 
 // normalizePeerAddr adds the default port if not specified.
+// Uses net.SplitHostPort to correctly handle IPv6 literals.
 func normalizePeerAddr(peer string) string {
-	if strings.Contains(peer, ":") {
+	_, _, err := net.SplitHostPort(peer)
+	if err == nil {
+		// Already has host:port.
 		return peer
 	}
-	return fmt.Sprintf("%s:%d", peer, meshconfig.DefaultPort)
+	// No port specified — strip brackets from IPv6 literal if present,
+	// since net.JoinHostPort adds them.
+	host := peer
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", meshconfig.DefaultPort))
 }
 
 // promptMeshKey reads the mesh key from stdin.

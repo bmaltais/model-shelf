@@ -129,6 +129,8 @@ func TestNormalizePeerAddr(t *testing.T) {
 		{"mini1:9900", "mini1:9900"},
 		{"192.168.1.1", "192.168.1.1:8844"},
 		{"192.168.1.1:7700", "192.168.1.1:7700"},
+		{"[::1]", "[::1]:8844"},
+		{"[::1]:9900", "[::1]:9900"},
 	}
 	for _, tt := range tests {
 		got := normalizePeerAddr(tt.input)
