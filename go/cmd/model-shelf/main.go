@@ -93,6 +93,8 @@ Init flags:
   --shelf <path>     Path for model storage (required)
   --role <roles>     Node roles: controller,store,executor (required)
   --name <name>      Node name (default: hostname)
+  --seed <addrs>     Comma-separated seed peer addresses (e.g. host1:8844,host2:8844)
+  --key <mesh-key>   Mesh key (written to mesh.key)
   --force            Overwrite existing config
 
 Service actions:
@@ -231,7 +233,7 @@ func cmdInit(args []string) int {
 	_, flags := parseFlags(args)
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--force]")
+		fmt.Println("Usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--seed <addrs>] [--key <mesh-key>] [--force]")
 		fmt.Println()
 		fmt.Println("Initialize a mesh node.")
 		fmt.Println()
@@ -239,6 +241,8 @@ func cmdInit(args []string) int {
 		fmt.Println("  --shelf <path>     Path for model storage (required)")
 		fmt.Println("  --role <roles>     Node roles: controller,store,executor (required)")
 		fmt.Println("  --name <name>      Node name (default: hostname)")
+		fmt.Println("  --seed <addrs>     Comma-separated seed peer addresses (e.g. host1:8844,host2:8844)")
+		fmt.Println("  --key <mesh-key>   Mesh key (written to mesh.key)")
 		fmt.Println("  --force            Overwrite existing config")
 		return 0
 	}
@@ -310,12 +314,24 @@ func cmdInit(args []string) int {
 		return 1
 	}
 
+	// Parse seeds if provided.
+	var seeds []string
+	if seedStr := flags["seed"]; seedStr != "" {
+		for _, s := range strings.Split(seedStr, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				seeds = append(seeds, s)
+			}
+		}
+	}
+
 	// Write mesh config.
 	meshCfg := &meshconfig.Config{
 		Name:      name,
 		Port:      meshconfig.DefaultPort,
 		Roles:     roles,
 		ShelfRoot: absShelf,
+		Seeds:     seeds,
 	}
 	if err := meshconfig.Write(meshCfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
@@ -323,9 +339,19 @@ func cmdInit(args []string) int {
 	}
 	fmt.Printf("model-shelf: wrote %s\n", meshconfig.ConfigPath())
 
-	// Mesh key handling: only generate for controller role.
+	// Mesh key handling:
+	// 1. If --key provided, use that.
+	// 2. If key already exists on disk, preserve it.
+	// 3. If controller role, generate a new key.
+	// 4. Otherwise, no key.
 	keyPath := meshconfig.MeshKeyPath()
-	if keyData, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(keyData))) > 0 {
+	if flagKey := flags["key"]; flagKey != "" {
+		if err := meshconfig.WriteMeshKey(flagKey); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing mesh key: %v\n", err)
+			return 1
+		}
+		fmt.Printf("model-shelf: stored mesh key at %s\n", keyPath)
+	} else if keyData, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(keyData))) > 0 {
 		key := strings.TrimSpace(string(keyData))
 		fmt.Printf("model-shelf: existing mesh key at %s (preserved)\n", keyPath)
 		fmt.Printf("\n  mesh key: %s\n\n", key)
