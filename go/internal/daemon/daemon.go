@@ -25,6 +25,7 @@ type Daemon struct {
 	server    *http.Server
 	mu        sync.Mutex
 	nodes     []NodeInfo
+	gossip    *Gossip
 }
 
 // HealthResponse is returned by GET /v1/health.
@@ -66,12 +67,20 @@ func New(cfg *meshconfig.Config) *Daemon {
 		startTime: time.Now(),
 	}
 	// Register self as a node.
+	selfNode := MeshNode{
+		Name:    cfg.Name,
+		Address: meshconfig.GetHostname(),
+		Roles:   cfg.Roles,
+		Port:    cfg.Port,
+		Status:  StatusOnline,
+	}
 	d.nodes = []NodeInfo{{
 		Name:    cfg.Name,
 		Address: meshconfig.GetHostname(),
 		Roles:   cfg.Roles,
 		Port:    cfg.Port,
 	}}
+	d.gossip = NewGossip(selfNode, cfg.MeshKey)
 	return d
 }
 
@@ -80,6 +89,8 @@ func (d *Daemon) Run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", d.handleHealth)
 	mux.HandleFunc("/v1/join", d.handleJoin)
+	mux.HandleFunc("/v1/nodes", d.handleNodes)
+	mux.HandleFunc("/v1/events", d.handleEvents)
 
 	handler := d.authMiddleware(mux)
 
@@ -93,9 +104,13 @@ func (d *Daemon) Run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Start gossip background poller.
+	d.gossip.StartPoller(ctx)
+
 	go func() {
 		<-ctx.Done()
 		log.Println("model-shelf daemon: shutting down...")
+		d.gossip.Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		d.server.Shutdown(shutdownCtx)
@@ -164,11 +179,52 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 	})
 	d.mu.Unlock()
 
+	// Register in gossip state and push join event to peers.
+	newNode := MeshNode{
+		Name:    req.Name,
+		Address: req.Address,
+		Port:    req.Port,
+		Roles:   req.Roles,
+		Status:  StatusOnline,
+	}
+	d.gossip.AddNode(newNode)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(JoinResponse{
 		OK:    true,
 		Nodes: existingNodes,
 	})
+}
+
+func (d *Daemon) handleNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	nodes := d.gossip.Nodes()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(nodes)
+}
+
+func (d *Daemon) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var ev Event
+	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "invalid event body"}`))
+		return
+	}
+
+	d.gossip.ApplyEvent(ev)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok": true}`))
 }
 
 // authMiddleware checks the mesh key on all /v1/ requests.
