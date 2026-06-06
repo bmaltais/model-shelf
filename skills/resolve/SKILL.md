@@ -54,7 +54,8 @@ model-shelf pull <repo_id> [--format F] [--quant Q] --target <node> --json
 - Fire-and-forget. Returns a job ID immediately.
 - If the user specifies where, pass `--target`. Otherwise let model-shelf decide.
 - If the model already exists on a peer node, model-shelf transfers from
-  the peer instead of re-downloading from HF.
+  the peer instead of re-downloading from HF (peer-to-peer transfer).
+- Progress is tracked via `model-shelf status <job_id> --json`.
 
 ### 4. Check status of in-flight operations
 
@@ -99,9 +100,12 @@ model-shelf join <peer_node> [--key <mesh_key>]
 model-shelf nodes --json
 ```
 
-Returns node health including GPU capabilities:
+Returns node health including GPU capabilities and disk metrics:
 ```json
-[{"name": "gpu-box-1", "status": "online", "roles": ["executor","store"], "gpu": {"name": "NVIDIA A100", "vram_total_gb": 80, "vram_available_gb": 72}, "disk_total_gb": 1000, "disk_free_gb": 450}]
+[
+  {"name": "gpu-box-1", "status": "online", "roles": ["executor","store"], "gpu": {"name": "NVIDIA A100", "vram_total_gb": 80, "vram_available_gb": 72}, "disk_total_gb": 1000, "disk_free_gb": 450},
+  {"name": "nas-store", "status": "online", "roles": ["store"], "gpu": null, "disk_total_gb": 4000, "disk_free_gb": 2000}
+]
 ```
 
 Nodes without a GPU report `"gpu": null`.
@@ -132,11 +136,12 @@ model-shelf leave
 
 1. **User wants to run a model locally** → use `resolve`.
 2. **User wants a model on a specific machine** → use `pull --target`.
-3. **User wants a model available for inference but doesn't specify where** → use `pull` (no target, model-shelf picks best Executor).
+3. **User wants a model available for inference but doesn't specify where** → use `pull` (no target, model-shelf picks best Executor by VRAM + disk).
 4. **User asks what's available** → use `inventory`.
-5. **User asks about download progress** → use `status`.
+5. **User asks about download/transfer progress** → use `status`.
 6. **User wants to set up a new machine** → use `init` + `join`.
 7. **User asks about the mesh / what machines are connected** → use `nodes`.
+8. **User asks about GPU capacity or which nodes have GPUs** → use `nodes --json` and check `gpu` field.
 
 ## Error Handling
 

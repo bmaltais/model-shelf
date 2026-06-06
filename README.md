@@ -159,10 +159,10 @@ model-shelf service uninstall
 ### View mesh status
 
 ```bash
-# Human-readable table with status and disk metrics
+# Human-readable table with status, disk, and GPU metrics
 model-shelf nodes
 
-# JSON output for scripting (includes disk_total_gb, disk_free_gb, uptime_seconds, gpu, last_seen)
+# JSON output for scripting (includes disk, uptime, gpu, last_seen)
 model-shelf nodes --json
 ```
 
@@ -173,11 +173,7 @@ The daemon auto-detects GPU hardware on startup:
 - **NVIDIA**: runs `nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits`
 - **Apple Silicon / unified memory**: detects via `sysctl` (total memory) and `vm_stat` (available)
 
-GPU info is reported in `GET /v1/health` and gossiped to all mesh peers:
-
-```json
-{"gpu": {"name": "NVIDIA A100-SXM4-80GB", "vram_total_gb": 80, "vram_available_gb": 72.5}}
-```
+GPU info is reported in `GET /v1/health` and gossiped to all mesh peers. Available VRAM is refreshed on each health check and gossip poll cycle (every 15 seconds).
 
 Nodes without a GPU report `"gpu": null`.
 
@@ -211,7 +207,7 @@ model-shelf service uninstall  # remove
 # Run daemon in foreground (debugging)
 model-shelf daemon [--port <N>]
 
-# View mesh nodes (status, disk metrics, last seen)
+# View mesh nodes (status, disk, GPU, last seen)
 model-shelf nodes
 model-shelf nodes --json
 
@@ -220,6 +216,7 @@ model-shelf inventory
 model-shelf inventory --json
 
 # Pull a model to a specific node (async, returns job ID)
+# If a mesh peer already has the model, transfers from the peer instead of re-downloading
 model-shelf pull "Qwen/Qwen3-14B-GGUF" --target gpu-box-1 --quant Q4_K_M
 model-shelf pull "mlx-community/Qwen3-14B-4bit" --target mac-mini
 
@@ -298,6 +295,23 @@ When a model is missing locally but available on a mesh peer:
 ]
 ```
 
+`model-shelf inventory --json` returns models across all mesh nodes:
+
+```json
+[
+  {"node": "gpu-box-1", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "size_bytes": 8320000000},
+  {"node": "nas-store", "repo_id": "mlx-community/Qwen3-14B-4bit", "format": "mlx", "size_bytes": 7500000000}
+]
+```
+
+`model-shelf status --json` returns in-flight and recent jobs:
+
+```json
+[
+  {"id": "abc123", "type": "transfer", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "target": "gpu-box-1", "source": "nas-store", "status": "transferring", "bytes_done": 4160000000, "bytes_total": 8320000000}
+]
+```
+
 ## Agent integration
 
 If you installed via `/plugin install`, you're done — the bundled skill tells the agent to always call `model-shelf resolve` before any Hugging Face download, and the SessionStart hook keeps the CLI installed. You may want to pre-allow the CLI in permissions so the agent doesn't prompt every time:
@@ -343,6 +357,11 @@ For every resolve request:
 2. **Mesh peers** — if the model is missing locally and the daemon is running, queries other nodes in the mesh. If found on a peer, returns `status="missing_locally"` with `mesh_available` listing which nodes have it.
 3. **Download** — downloads from the Hugging Face Hub REST API directly into the shelf, so the file lands at the friendly path. For GGUF, the actual filename is looked up via the HF API. Pass `--no-download` to skip this step and return `status="missing"` instead.
 
+For `pull` operations to a target node:
+
+1. **Peer transfer** — if another mesh node already has the model, the target pulls directly from the peer (node-to-node, no re-download from HF). GGUF files transfer as single files; MLX/safetensors transfer as tar archives.
+2. **HF download** — if no peer has the model, downloads from Hugging Face Hub directly to the target.
+
 Set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
 
 Curated-shelf paths:
@@ -373,11 +392,11 @@ model-shelf init --role store --shelf ~/.cache/model-shelf/models
 
 ## Status
 
-v0.14 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), and disk/uptime/GPU metrics propagation. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics for scripting.
+v0.15 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), disk/uptime/GPU metrics propagation, and **peer-to-peer model transfers**. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics (including GPU) for scripting.
 
 ### Go version
 
-The Go implementation (`go/`) provides the full CLI in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Includes mesh networking (`init`, `join`, `nodes`, `daemon`, `service`), model resolution (`resolve`, `find`, `list`), GPU auto-detection, and gossip-based health propagation. Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
+The Go implementation (`go/`) provides the full CLI in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Includes mesh networking (`init`, `join`, `nodes`, `daemon`, `service`), model resolution (`resolve`, `find`, `list`), GPU auto-detection, peer-to-peer transfers, and gossip-based health propagation. Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
 
 Roadmap: `verify` subcommand, quantized-safetensors variants (AWQ/GPTQ).
 
