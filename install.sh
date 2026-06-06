@@ -46,6 +46,11 @@ echo ""
 # Create install directory
 mkdir -p "$INSTALL_DIR"
 
+# Remove existing binary first — on Linux, writing to a binary held open by a
+# running process (e.g. the daemon) fails with ETXTBSY / curl error 23.
+# Unlinking first is safe: the kernel keeps the inode alive until the process exits.
+rm -f "${TARGET}"
+
 # Download
 echo "Downloading ${URL}..."
 if command -v curl >/dev/null 2>&1; then
@@ -71,24 +76,26 @@ PROFILE="$HOME/.profile"
 
 add_to_profile() {
   if [ -f "$PROFILE" ] && grep -qF "$INSTALL_DIR" "$PROFILE" 2>/dev/null; then
-    return 0
+    # Entry already exists — nothing to do.
+    return 1
   fi
   echo "" >> "$PROFILE"
   echo "# Added by model-shelf installer" >> "$PROFILE"
   echo "$PATH_LINE" >> "$PROFILE"
-  echo "Updated ${PROFILE} with PATH entry."
+  return 0
 }
 
-case ":$PATH:" in
-  *":${INSTALL_DIR}:"*)
-    # Already on PATH in this session; ensure ~/.profile has it for non-interactive shells.
-    add_to_profile
-    ;;
-  *)
-    add_to_profile
-    echo ""
-    echo "ℹ ${INSTALL_DIR} has been added to ${PROFILE}."
-    echo "  Run 'source ${PROFILE}' or start a new login shell to activate."
-    echo ""
-    ;;
-esac
+if add_to_profile; then
+  echo "Updated ${PROFILE} with PATH entry."
+  case ":$PATH:" in
+    *":${INSTALL_DIR}:"*)
+      # Already on PATH in this session — no activation instructions needed.
+      ;;
+    *)
+      echo ""
+      echo "ℹ ${INSTALL_DIR} has been added to ${PROFILE}."
+      echo "  Run 'source ${PROFILE}' or start a new login shell to activate."
+      echo ""
+      ;;
+  esac
+fi
