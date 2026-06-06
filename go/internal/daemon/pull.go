@@ -92,10 +92,41 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 }
 
 // executePull runs the download in the background.
+// It first checks if the model already exists locally, then checks if a peer
+// has the model (preferring LAN transfer), and finally falls back to HF download.
 func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 	d.jobs.SetDownloading(jobID)
 	log.Printf("pull: starting download of %s (format=%s, quant=%s) job=%s", repoID, format, quant, jobID)
 
+	// Step 1: Check if the model is already on the local shelf.
+	localCfg := &resolver.Config{
+		ShelfRoot:      d.cfg.ShelfRoot,
+		AllowDownloads: false, // Don't download yet — just check local.
+	}
+	localResult, err := resolver.ResolveModel(localCfg, repoID, format, quant)
+	if err == nil && localResult.Status == "found" {
+		d.jobs.SetAlreadyPresent(jobID)
+		log.Printf("pull: job %s skipped — %s already present at %s", jobID, repoID, safeStr(localResult.Path))
+		return
+	}
+
+	// Step 2: Check mesh inventory — prefer peer transfer (LAN) over HF (WAN).
+	if peer := d.findPeerWithModel(repoID, format, quant); peer != nil {
+		log.Printf("pull: job %s — model found on peer %s, attempting transfer", jobID, peer.Name)
+		if err := d.transferFromPeer(jobID, peer, repoID, format, quant); err != nil {
+			log.Printf("pull: job %s — peer transfer from %s failed: %v, falling back to HF", jobID, peer.Name, err)
+			// Fall through to HF download.
+		} else {
+			// Transfer succeeded — update inventory and complete.
+			d.updateInventoryAfterTransfer(jobID, repoID, format, quant)
+			d.jobs.SetCompleted(jobID)
+			log.Printf("pull: job %s completed — %s transferred from peer %s", jobID, repoID, peer.Name)
+			return
+		}
+	}
+
+	// Step 3: Fall back to downloading from Hugging Face.
+	d.jobs.SetDownloading(jobID)
 	cfg := &resolver.Config{
 		ShelfRoot:      d.cfg.ShelfRoot,
 		AllowDownloads: true,
