@@ -387,6 +387,24 @@ func TestCmdStatus_LocalFlag_OverridesDefault(t *testing.T) {
 	}
 }
 
+func TestCmdStatus_MeshAndLocal_MutuallyExclusive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]daemon.Job{})
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	code := cmdStatus([]string{"--mesh", "--local"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when both --mesh and --local are given, got %d", code)
+	}
+}
+
 func TestCmdStatus_NoMeshDefault_StoreOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -101,6 +101,11 @@ func statusAllJobs(addr string, flags map[string]string) int {
 	// Determine whether to query mesh-wide.
 	// Explicit --local forces local-only; explicit --mesh forces mesh-wide.
 	// Otherwise, default to mesh-wide if this node is a controller or has seeds.
+	if flags["local"] == "true" && flags["mesh"] == "true" {
+		fmt.Fprintf(os.Stderr, "error: --local and --mesh are mutually exclusive\n")
+		return 1
+	}
+
 	useMesh := false
 	if flags["local"] == "true" {
 		useMesh = false
