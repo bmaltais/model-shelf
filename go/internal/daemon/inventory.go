@@ -229,7 +229,7 @@ func scanGGUF(formatDir string, onDisk map[string]*InventoryEntry) error {
 				if err != nil {
 					continue
 				}
-				quant := extractQuant(f.Name())
+				quant := ExtractQuant(f.Name())
 				entry := &InventoryEntry{
 					RepoID:    repoID,
 					Format:    "gguf",
@@ -289,11 +289,11 @@ func dirSizeBytes(path string) int64 {
 	return total
 }
 
-// extractQuant attempts to derive the quantization string from a GGUF filename.
+// ExtractQuant derives the quantization string from a GGUF filename.
 // Example: "Qwen3-14B-Q4_K_M.gguf" -> "Q4_K_M"
 // Handles dot-delimited names (e.g. "model.v1.0.Q4_K_M.gguf") and normalizes
 // the result to uppercase for stable identity keys.
-func extractQuant(filename string) string {
+func ExtractQuant(filename string) string {
 	// Strip .gguf extension (case-insensitive).
 	name := filename
 	if strings.HasSuffix(strings.ToLower(name), ".gguf") {

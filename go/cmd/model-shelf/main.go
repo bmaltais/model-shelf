@@ -470,6 +470,9 @@ func cmdFind(args []string) int {
 	}
 
 	if flags["json"] == "true" {
+		if results == nil {
+			results = []search.FindResult{}
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(results)
@@ -493,6 +496,7 @@ func cmdFind(args []string) int {
 type ShelfEntry struct {
 	RepoID    string `json:"repo_id"`
 	Format    string `json:"format"`
+	Quant     string `json:"quant,omitempty"`
 	SizeBytes int64  `json:"size_bytes"`
 	Path      string `json:"path"`
 }
@@ -569,13 +573,41 @@ func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 					continue
 				}
 				repoPath := filepath.Join(sub, pub.Name(), repo.Name())
-				size := dirSize(repoPath)
-				entries = append(entries, ShelfEntry{
-					RepoID:    pub.Name() + "/" + repo.Name(),
-					Format:    format,
-					SizeBytes: size,
-					Path:      repoPath,
-				})
+				repoID := pub.Name() + "/" + repo.Name()
+
+				if format == "gguf" {
+					// Each .gguf file is a separate entry with its own quant.
+					files, err := os.ReadDir(repoPath)
+					if err != nil {
+						errs = append(errs, fmt.Errorf("reading %s: %w", repoPath, err))
+						continue
+					}
+					for _, f := range files {
+						if f.IsDir() || !strings.HasSuffix(strings.ToLower(f.Name()), ".gguf") {
+							continue
+						}
+						fInfo, err := f.Info()
+						if err != nil {
+							continue
+						}
+						quant := daemon.ExtractQuant(f.Name())
+						entries = append(entries, ShelfEntry{
+							RepoID:    repoID,
+							Format:    format,
+							Quant:     quant,
+							SizeBytes: fInfo.Size(),
+							Path:      filepath.Join(repoPath, f.Name()),
+						})
+					}
+				} else {
+					size := dirSize(repoPath)
+					entries = append(entries, ShelfEntry{
+						RepoID:    repoID,
+						Format:    format,
+						SizeBytes: size,
+						Path:      repoPath,
+					})
+				}
 			}
 		}
 	}

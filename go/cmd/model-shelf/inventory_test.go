@@ -347,6 +347,68 @@ func TestCmdInventory_NoConfig(t *testing.T) {
 	}
 }
 
+func TestCmdInventory_JSON_EmptyReturnsArray(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	nodes := []daemon.MeshNode{
+		{Name: "empty", Address: "REPLACE", Port: 0, Roles: []string{"store"}, Status: daemon.StatusOnline},
+	}
+
+	nodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/inventory" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]daemon.InventoryEntry{})
+		}
+	}))
+	defer nodeServer.Close()
+
+	nodeAddr, nodePort := parseTestServerAddr(t, nodeServer.URL)
+	nodes[0].Address = nodeAddr
+	nodes[0].Port = nodePort
+
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonServer.Close()
+
+	daemonPort := strings.TrimPrefix(daemonServer.URL, "http://127.0.0.1:")
+	cfg := &meshconfig.Config{
+		Name:      "empty",
+		Port:      mustAtoi(t, daemonPort),
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdInventory([]string{"--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// Must be [] not null.
+	if output != "[]\n" {
+		t.Errorf("expected []\\n for empty inventory, got %q", output)
+	}
+}
+
 func TestCmdInventory_DaemonNotRunning(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
