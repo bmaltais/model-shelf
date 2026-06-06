@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
+	"github.com/alexziskind1/model-shelf/internal/resolver"
 )
 
 // Daemon holds the running daemon state.
@@ -380,11 +381,8 @@ func looksLikeModelDir(path string) bool {
 const inventoryScanInterval = 60 * time.Second
 
 // startInventoryScanner launches a background goroutine that periodically
-// re-scans the shelf directory and reconciles inventory.
+// re-scans all shelf candidates and reconciles inventory.
 func (d *Daemon) startInventoryScanner(ctx context.Context) {
-	if d.cfg.ShelfRoot == "" {
-		return
-	}
 	go func() {
 		ticker := time.NewTicker(inventoryScanInterval)
 		defer ticker.Stop()
@@ -393,12 +391,14 @@ func (d *Daemon) startInventoryScanner(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := d.inventory.ScanShelf(d.cfg.ShelfRoot); err != nil {
-					log.Printf("model-shelf daemon: inventory rescan error: %v", err)
-				} else {
-					if err := d.inventory.Save(); err != nil {
-						log.Printf("model-shelf daemon: failed to persist inventory after rescan: %v", err)
+				cfg := &resolver.Config{ShelfRoot: d.cfg.ShelfRoot}
+				for _, root := range resolver.ListShelfCandidates(cfg) {
+					if err := d.inventory.ScanShelf(root); err != nil {
+						log.Printf("model-shelf daemon: inventory rescan error (%s): %v", root, err)
 					}
+				}
+				if err := d.inventory.Save(); err != nil {
+					log.Printf("model-shelf daemon: failed to persist inventory after rescan: %v", err)
 				}
 			}
 		}
