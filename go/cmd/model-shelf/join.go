@@ -14,6 +14,7 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/service"
+	"golang.org/x/term"
 )
 
 func cmdJoin(args []string) int {
@@ -25,6 +26,9 @@ func cmdJoin(args []string) int {
 		fmt.Println()
 		fmt.Println("Flags:")
 		fmt.Println("  --key <key>        Mesh key (prompts if not provided)")
+		fmt.Println()
+		fmt.Println("Environment:")
+		fmt.Println("  MODEL_SHELF_MESH_KEY   Mesh key (used when --key is not provided)")
 		return 0
 	}
 	if len(positional) < 1 {
@@ -35,12 +39,23 @@ func cmdJoin(args []string) int {
 	peer := positional[0]
 	peerAddr := normalizePeerAddr(peer)
 
-	// Get mesh key from --key flag or prompt.
+	// Get mesh key from --key flag, env var, or prompt.
 	meshKey := flags["key"]
 	if meshKey == "" {
-		meshKey = promptMeshKey()
+		meshKey = os.Getenv("MODEL_SHELF_MESH_KEY")
+	}
+	if meshKey == "" {
+		interactive := term.IsTerminal(int(os.Stdin.Fd()))
+		if interactive {
+			meshKey = promptMeshKey()
+		}
 		if meshKey == "" {
 			fmt.Fprintf(os.Stderr, "error: mesh key is required\n")
+			if interactive {
+				fmt.Fprintf(os.Stderr, "hint: use --key <mesh-key> or set MODEL_SHELF_MESH_KEY\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "hint: use --key <mesh-key> or set MODEL_SHELF_MESH_KEY in non-interactive mode\n")
+			}
 			return 1
 		}
 	}
@@ -189,7 +204,12 @@ func normalizePeerAddr(peer string) string {
 }
 
 // promptMeshKey reads the mesh key from stdin.
+// If stdin is not a terminal (non-interactive mode), returns empty string
+// without printing a prompt.
 func promptMeshKey() string {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return ""
+	}
 	fmt.Fprint(os.Stderr, "Mesh key: ")
 	var key string
 	fmt.Scanln(&key)

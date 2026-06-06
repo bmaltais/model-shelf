@@ -112,6 +112,9 @@ func LoadConfig(path string) (*resolver.Config, error) {
 	}
 	if cfg.ShelfRoot == "" {
 		cfg.ShelfRoot = resolver.DiscoverPrimaryShelf()
+		if cfg.ShelfRoot == "" {
+			return nil, fmt.Errorf("no configured shelf found. Run `model-shelf init --role <roles> --shelf <path>` to create one")
+		}
 	} else {
 		cfg.ShelfRoot = relocate.RelocateShelf(cfg.ShelfRoot)
 	}
