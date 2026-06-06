@@ -79,8 +79,6 @@ func New(cfg *meshconfig.Config) *Daemon {
 		DiskTotalGB: totalGB,
 		LastSeen:    &now,
 	}
-	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot, d.startTime)
-
 	// Load or create inventory and scan shelf.
 	inv, err := LoadInventory()
 	if err != nil {
@@ -97,6 +95,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 	}
 	d.inventory = inv
 	d.jobs = NewJobStore()
+	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot, d.startTime, d.jobs)
 
 	return d
 }

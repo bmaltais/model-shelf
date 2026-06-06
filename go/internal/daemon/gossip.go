@@ -72,16 +72,18 @@ type Gossip struct {
 	shelfRoot string // for self disk usage updates
 	meshKey   string
 	startTime time.Time // daemon start time for uptime calculation
+	jobs      *JobStore // shared job store for gossip replication
 	cancel    context.CancelFunc
 }
 
 // NewGossip creates a gossip instance, loading persisted state if available.
-func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime time.Time) *Gossip {
+func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime time.Time, jobs *JobStore) *Gossip {
 	g := &Gossip{
 		self:      selfNode.Name,
 		shelfRoot: shelfRoot,
 		meshKey:   meshKey,
 		startTime: startTime,
+		jobs:      jobs,
 	}
 
 	// Try to load persisted state.
@@ -352,6 +354,9 @@ func (g *Gossip) pollPeers() {
 		}
 		hr := g.checkHealth(nodes[i])
 		if hr.OK {
+			// Fetch remote jobs and merge into local store.
+			g.fetchPeerJobs(nodes[i])
+
 			now := time.Now()
 			nodes[i].LastSeen = &now
 			if nodes[i].Status == StatusOffline || nodes[i].MissedPolls > 0 {
@@ -470,6 +475,35 @@ func (g *Gossip) checkHealth(node MeshNode) healthResult {
 		return healthResult{OK: true}
 	}
 	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds}
+}
+
+// fetchPeerJobs fetches jobs from a peer node and merges them into the local store.
+func (g *Gossip) fetchPeerJobs(node MeshNode) {
+	if g.jobs == nil {
+		return
+	}
+	url := fmt.Sprintf("http://%s:%d/v1/jobs", node.Address, node.Port)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	if g.meshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.meshKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var jobs []Job
+	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
+		return
+	}
+	g.jobs.Merge(jobs)
 }
 
 func (g *Gossip) pushEvent(ev Event, nodes []MeshNode) {

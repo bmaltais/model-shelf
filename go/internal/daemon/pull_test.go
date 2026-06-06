@@ -200,15 +200,15 @@ func TestJobStore_Lifecycle(t *testing.T) {
 		t.Fatalf("expected queued, got %s", job.Status)
 	}
 
-	store.SetRunning(job.ID)
+	store.SetDownloading(job.ID)
 	got := store.Get(job.ID)
-	if got.Status != JobRunning {
+	if got.Status != JobDownloading {
 		t.Fatalf("expected running, got %s", got.Status)
 	}
 
-	store.SetDone(job.ID)
+	store.SetCompleted(job.ID)
 	got = store.Get(job.ID)
-	if got.Status != JobDone {
+	if got.Status != JobCompleted {
 		t.Fatalf("expected done, got %s", got.Status)
 	}
 	if got.DoneAt == nil {
@@ -220,7 +220,7 @@ func TestJobStore_Failed(t *testing.T) {
 	store := NewJobStore()
 
 	job := store.Create("test/model", "gguf", "Q4_K_M", "node-1")
-	store.SetRunning(job.ID)
+	store.SetDownloading(job.ID)
 	store.SetFailed(job.ID, "disk full")
 
 	got := store.Get(job.ID)
@@ -310,3 +310,110 @@ func TestPullEndpointAuth(t *testing.T) {
 	// Wait for background goroutine.
 	time.Sleep(100 * time.Millisecond)
 }
+
+func TestJobStore_Progress(t *testing.T) {
+	store := NewJobStore()
+
+	job := store.Create("test/model", "mlx", "", "node-1")
+	store.SetDownloading(job.ID)
+	store.SetProgress(job.ID, 500_000_000, 2_000_000_000)
+
+	got := store.Get(job.ID)
+	if got.BytesDownloaded != 500_000_000 {
+		t.Fatalf("expected 500MB downloaded, got %d", got.BytesDownloaded)
+	}
+	if got.BytesTotal != 2_000_000_000 {
+		t.Fatalf("expected 2GB total, got %d", got.BytesTotal)
+	}
+}
+
+func TestJobStore_Pruning(t *testing.T) {
+	store := NewJobStore()
+
+	// Create a completed job with DoneAt 25 hours ago.
+	job := store.Create("test/model", "mlx", "", "node-1")
+	store.SetCompleted(job.ID)
+
+	// Manually backdate the DoneAt to trigger pruning.
+	store.mu.Lock()
+	old := time.Now().Add(-25 * time.Hour)
+	store.jobs[job.ID].DoneAt = &old
+	store.mu.Unlock()
+
+	// Create a recent job that should survive pruning.
+	recentJob := store.Create("test/model2", "mlx", "", "node-1")
+	store.SetCompleted(recentJob.ID)
+
+	// All() triggers pruning.
+	all := store.All()
+	if len(all) != 1 {
+		t.Fatalf("expected 1 job after pruning, got %d", len(all))
+	}
+	if all[0].ID != recentJob.ID {
+		t.Fatalf("expected recent job to survive, got %s", all[0].ID)
+	}
+}
+
+func TestJobStore_Merge(t *testing.T) {
+	store := NewJobStore()
+
+	// Create a local job in queued state.
+	local := store.Create("local/model", "mlx", "", "node-1")
+
+	// Merge remote jobs — one new, one update to the local job (status advance).
+	now := time.Now()
+	remoteJobs := []Job{
+		{
+			ID:        "remote-job-1",
+			RepoID:    "remote/model",
+			Format:    "gguf",
+			Quant:     "Q4_K_M",
+			Target:    "node-2",
+			Status:    JobCompleted,
+			CreatedAt: now,
+			DoneAt:    &now,
+		},
+		{
+			ID:        local.ID,
+			RepoID:    "local/model",
+			Format:    "mlx",
+			Target:    "node-1",
+			Status:    JobDownloading,
+			CreatedAt: local.CreatedAt,
+		},
+	}
+	store.Merge(remoteJobs)
+
+	all := store.All()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 jobs after merge, got %d", len(all))
+	}
+
+	// Verify remote job was added.
+	remote := store.Get("remote-job-1")
+	if remote == nil {
+		t.Fatal("expected remote job to be in store")
+	}
+	if remote.Status != JobCompleted {
+		t.Fatalf("expected completed, got %s", remote.Status)
+	}
+
+	// Verify local job was advanced to downloading.
+	updated := store.Get(local.ID)
+	if updated.Status != JobDownloading {
+		t.Fatalf("expected status advanced to downloading, got %s", updated.Status)
+	}
+}
+
+func TestJobStore_Transferring(t *testing.T) {
+	store := NewJobStore()
+
+	job := store.Create("test/model", "mlx", "", "node-1")
+	store.SetTransferring(job.ID)
+
+	got := store.Get(job.ID)
+	if got.Status != JobTransferring {
+		t.Fatalf("expected transferring, got %s", got.Status)
+	}
+}
+
