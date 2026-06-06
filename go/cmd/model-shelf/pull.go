@@ -274,7 +274,7 @@ func autoSelectTarget(repoID, format, quant string) (*daemon.PlacementResult, er
 
 	activeJobCountByNode := make(map[string]int)
 	for _, j := range jobs {
-		if j.Status == daemon.JobQueued || j.Status == daemon.JobDownloading || j.Status == daemon.JobTransferring {
+		if j.Status == daemon.JobQueued || j.Status == daemon.JobDownloading || j.Status == daemon.JobTransferring || j.Status == daemon.JobEvicting {
 			activeJobCountByNode[j.Target]++
 		}
 	}

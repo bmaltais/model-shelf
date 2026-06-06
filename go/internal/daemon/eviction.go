@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,11 +18,11 @@ import (
 
 // EvictionResult describes a single model evicted during a cascade.
 type EvictionResult struct {
-	RepoID      string `json:"repo_id"`
-	Format      string `json:"format"`
-	Quant       string `json:"quant,omitempty"`
-	SizeBytes   int64  `json:"size_bytes"`
-	Relocated   bool   `json:"relocated"`   // true if transferred to peer before deletion
+	RepoID           string `json:"repo_id"`
+	Format           string `json:"format"`
+	Quant            string `json:"quant,omitempty"`
+	SizeBytes        int64  `json:"size_bytes"`
+	Relocated        bool   `json:"relocated"`                    // true if transferred to peer before deletion
 	RelocationTarget string `json:"relocation_target,omitempty"` // peer name if relocated
 }
 
@@ -40,6 +41,9 @@ func (e *EvictionError) Error() string {
 // evictForSpace attempts to free at least neededBytes on the local node by evicting
 // LRU models. Returns the list of evicted models, or an error if unable to free enough.
 //
+// This method is serialized by d.evictMu to prevent concurrent pulls from double-counting
+// freed space when both observe the same inventory snapshot.
+//
 // Eviction rules:
 //  1. Models are sorted by last-accessed timestamp (oldest first = LRU).
 //  2. If the model exists on another node, delete locally.
@@ -47,7 +51,12 @@ func (e *EvictionError) Error() string {
 //  4. If the model is the last copy and no peer has room, skip it (never lose a model).
 //  5. Cascade: keep evicting until enough space is freed or no more candidates.
 func (d *Daemon) evictForSpace(neededBytes int64, excludeRepoID string) ([]EvictionResult, error) {
-	// Get current disk free space.
+	// Serialize eviction to prevent concurrent pulls from racing on the same
+	// inventory snapshot and double-counting freed space.
+	d.evictMu.Lock()
+	defer d.evictMu.Unlock()
+
+	// Get current disk free space (after acquiring lock — reflects any prior eviction).
 	_, freeGB := DiskUsage(d.cfg.ShelfRoot)
 	freeBytes := int64(freeGB * 1024 * 1024 * 1024)
 
@@ -210,37 +219,81 @@ func modelExistsOnPeer(entry InventoryEntry, peers []peerInventoryInfo) bool {
 }
 
 // findPeerWithMostFreeSpace finds the peer with the most free disk space that
-// can accommodate the given model size.
+// can accommodate the given model size. It issues a live health check to the top
+// candidate to confirm current disk availability, since gossip DiskFreeGB may be
+// stale by up to one heartbeat interval.
 func (d *Daemon) findPeerWithMostFreeSpace(neededBytes int64) *peerSource {
 	nodes := d.gossip.Nodes()
 	neededGB := float64(neededBytes) / (1024 * 1024 * 1024)
 
-	var best *MeshNode
-	for i := range nodes {
-		n := &nodes[i]
+	// Sort candidates by DiskFreeGB descending.
+	type candidate struct {
+		node MeshNode
+	}
+	var candidates []candidate
+	for _, n := range nodes {
 		if n.Name == d.cfg.Name || n.Status == StatusOffline {
 			continue
 		}
-		// Must be a Store or Executor (can hold models).
 		if !HasRole(n.Roles, "store") && !HasRole(n.Roles, "executor") {
 			continue
 		}
 		if n.DiskFreeGB < neededGB {
 			continue
 		}
-		if best == nil || n.DiskFreeGB > best.DiskFreeGB {
-			best = n
-		}
+		candidates = append(candidates, candidate{node: n})
 	}
 
-	if best == nil {
-		return nil
+	// Sort by most free space first.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].node.DiskFreeGB > candidates[j].node.DiskFreeGB
+	})
+
+	// Try candidates in order, confirming live disk availability.
+	for _, c := range candidates {
+		liveFreeGB := d.checkPeerDiskFree(c.node)
+		if liveFreeGB >= neededGB {
+			return &peerSource{
+				Name:    c.node.Name,
+				Address: c.node.Address,
+				Port:    c.node.Port,
+			}
+		}
+		log.Printf("eviction: peer %s has stale DiskFreeGB (gossip=%.1f, live=%.1f, need=%.1f) — skipping",
+			c.node.Name, c.node.DiskFreeGB, liveFreeGB, neededGB)
 	}
-	return &peerSource{
-		Name:    best.Name,
-		Address: best.Address,
-		Port:    best.Port,
+
+	return nil
+}
+
+// checkPeerDiskFree issues a live GET /v1/health to a peer and returns current DiskFreeGB.
+// Returns 0 on any error (peer unreachable, timeout, etc.).
+func (d *Daemon) checkPeerDiskFree(node MeshNode) float64 {
+	hostPort := net.JoinHostPort(node.Address, fmt.Sprintf("%d", node.Port))
+	url := fmt.Sprintf("http://%s/v1/health", hostPort)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0
 	}
+	if d.cfg.MeshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+d.cfg.MeshKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var hr struct {
+		DiskFreeGB float64 `json:"disk_free_gb"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
+		return 0
+	}
+	return hr.DiskFreeGB
 }
 
 // relocateModel transfers a model to a peer by triggering a pull on the peer.
@@ -279,26 +332,38 @@ func (d *Daemon) relocateModel(entry InventoryEntry, peer *peerSource) error {
 	}
 
 	// Poll the peer's job status until complete or failed.
-	return d.waitForPeerJob(peer, pullResp.JobID)
+	// Use a context with timeout so the caller can cancel if the daemon is shutting down.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	return d.waitForPeerJob(ctx, peer, pullResp.JobID)
 }
 
 // waitForPeerJob polls a peer's job endpoint until the job reaches a terminal state.
-func (d *Daemon) waitForPeerJob(peer *peerSource, jobID string) error {
+// Respects the provided context for cancellation (e.g. daemon shutdown, timeout).
+// Returns an error if the peer becomes unreachable with consecutive failures.
+func (d *Daemon) waitForPeerJob(ctx context.Context, peer *peerSource, jobID string) error {
 	hostPort := net.JoinHostPort(peer.Address, fmt.Sprintf("%d", peer.Port))
 	url := fmt.Sprintf("http://%s/v1/jobs?id=%s&local=true", hostPort, jobID)
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	timeout := time.After(10 * time.Minute)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
+	const maxConsecutiveFailures = 15 // 15 × 2s = 30s of peer unreachability
+	consecutiveFailures := 0
+
 	for {
 		select {
-		case <-timeout:
-			return fmt.Errorf("timed out waiting for relocation job %s on %s", jobID, peer.Name)
+		case <-ctx.Done():
+			return fmt.Errorf("cancelled waiting for relocation job %s on %s: %w", jobID, peer.Name, ctx.Err())
 		case <-ticker.C:
-			req, err := http.NewRequest(http.MethodGet, url, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 			if err != nil {
+				consecutiveFailures++
+				if consecutiveFailures >= maxConsecutiveFailures {
+					return fmt.Errorf("peer %s unreachable for %d consecutive attempts while waiting for job %s",
+						peer.Name, consecutiveFailures, jobID)
+				}
 				continue
 			}
 			if d.cfg.MeshKey != "" {
@@ -306,10 +371,20 @@ func (d *Daemon) waitForPeerJob(peer *peerSource, jobID string) error {
 			}
 			resp, err := client.Do(req)
 			if err != nil {
+				consecutiveFailures++
+				if consecutiveFailures >= maxConsecutiveFailures {
+					return fmt.Errorf("peer %s unreachable for %d consecutive attempts while waiting for job %s",
+						peer.Name, consecutiveFailures, jobID)
+				}
 				continue
 			}
 			if resp.StatusCode != http.StatusOK {
 				resp.Body.Close()
+				consecutiveFailures++
+				if consecutiveFailures >= maxConsecutiveFailures {
+					return fmt.Errorf("peer %s returned non-200 for %d consecutive attempts while waiting for job %s",
+						peer.Name, consecutiveFailures, jobID)
+				}
 				continue
 			}
 			var job Job
@@ -318,6 +393,7 @@ func (d *Daemon) waitForPeerJob(peer *peerSource, jobID string) error {
 				continue
 			}
 			resp.Body.Close()
+			consecutiveFailures = 0 // Reset on successful response.
 
 			switch job.Status {
 			case JobCompleted, JobAlreadyPresent:
@@ -331,6 +407,10 @@ func (d *Daemon) waitForPeerJob(peer *peerSource, jobID string) error {
 }
 
 // deleteModel removes a model from the local shelf and inventory.
+// The inventory entry is removed BEFORE the disk deletion to prevent ghost entries
+// if the process crashes between the two operations. A crash after inventory removal
+// but before disk deletion leaves files on disk (harmless — cleaned on next scan)
+// rather than an inventory entry pointing at a missing path.
 func (d *Daemon) deleteModel(entry InventoryEntry) error {
 	var modelPath string
 	var err error
@@ -344,25 +424,31 @@ func (d *Daemon) deleteModel(entry InventoryEntry) error {
 		return fmt.Errorf("resolving shelf path for deletion: %w", err)
 	}
 
+	// Remove from inventory FIRST (before disk deletion).
+	// A crash after this point leaves orphan files on disk, which is safe —
+	// ScanShelf on restart will not re-add them since the entry is gone,
+	// and the files are harmless dead weight until the next eviction or manual cleanup.
+	release, lockErr := acquireInventoryLock()
+	if lockErr != nil {
+		return fmt.Errorf("eviction: cannot acquire inventory lock for %s: %w", entry.Key(), lockErr)
+	}
+	d.inventory.Remove(entry.RepoID, entry.Format, entry.Quant)
+	if err := d.inventory.Save(); err != nil {
+		release()
+		return fmt.Errorf("eviction: inventory save error for %s: %w", entry.Key(), err)
+	}
+	release()
+
 	// Delete from disk.
 	if err := os.RemoveAll(modelPath); err != nil {
-		return fmt.Errorf("removing %s: %w", modelPath, err)
+		// Inventory entry is already gone. Log the disk error but don't fail —
+		// the space may still be freed (e.g. partial removal), and ScanShelf
+		// on restart will reconcile.
+		log.Printf("eviction: warning: failed to remove %s from disk: %v (inventory already updated)", modelPath, err)
 	}
 
 	// Clean up empty parent directories.
 	cleanEmptyParents(modelPath, d.cfg.ShelfRoot)
-
-	// Remove from inventory.
-	release, lockErr := acquireInventoryLock()
-	if lockErr != nil {
-		log.Printf("eviction: failed to acquire inventory lock: %v", lockErr)
-	} else {
-		d.inventory.Remove(entry.RepoID, entry.Format, entry.Quant)
-		if err := d.inventory.Save(); err != nil {
-			log.Printf("eviction: inventory save error: %v", err)
-		}
-		release()
-	}
 
 	log.Printf("eviction: deleted %s (format=%s, quant=%s) from local shelf", entry.RepoID, entry.Format, entry.Quant)
 	return nil
@@ -396,13 +482,9 @@ func (d *Daemon) evictIfNeeded(jobID, repoID, format, quant string) error {
 	// Add 10% overhead for filesystem overhead.
 	neededBytes := int64(float64(sizeBytes) * 1.1)
 
-	// Check if eviction is needed before changing job status.
-	_, freeGB := DiskUsage(d.cfg.ShelfRoot)
-	freeBytes := int64(freeGB * 1024 * 1024 * 1024)
-	if freeBytes >= neededBytes {
-		return nil // Already have enough space.
-	}
-
+	// SetEvicting is deferred until evictForSpace confirms eviction is actually needed
+	// (it re-checks disk space under the mutex). This avoids unnecessary status changes
+	// and peer queries when a concurrent eviction already freed enough space.
 	d.jobs.SetEvicting(jobID)
 
 	results, evictErr := d.evictForSpace(neededBytes, repoID)

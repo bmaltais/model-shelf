@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ type Daemon struct {
 	inventory *Inventory
 	jobs      *JobStore
 	gpu       *GPUInfo
+	evictMu   sync.Mutex // serializes eviction cascades to prevent double-counting freed space
 }
 
 // HealthResponse is returned by GET /v1/health.
