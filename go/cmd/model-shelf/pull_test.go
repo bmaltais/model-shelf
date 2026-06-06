@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
@@ -111,5 +114,194 @@ func TestCmdPull_Help(t *testing.T) {
 	code := cmdPull([]string{"--help"})
 	if code != 0 {
 		t.Fatalf("expected exit code 0 for help, got %d", code)
+	}
+}
+
+func TestCmdPull_ErrorMessage_404(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Start a fake target that returns 404.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	host := u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
+
+	// Write mesh state.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "old-node", Address: host, Port: port, Roles: []string{"store"}},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o644)
+
+	// Capture stderr.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	code := cmdPull([]string{"mlx-community/test-model-mlx", "--target", "old-node"})
+
+	w.Close()
+	os.Stderr = oldStderr
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	errOutput := string(out)
+	if !strings.Contains(errOutput, "old-node") {
+		t.Errorf("error should mention target name, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "hint:") {
+		t.Errorf("error should include a hint, got: %s", errOutput)
+	}
+}
+
+func TestCmdPull_ErrorMessage_401(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	host := u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
+
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "secure-node", Address: host, Port: port, Roles: []string{"store"}},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o644)
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	code := cmdPull([]string{"mlx-community/test-model-mlx", "--target", "secure-node"})
+
+	w.Close()
+	os.Stderr = oldStderr
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	errOutput := string(out)
+	if !strings.Contains(errOutput, "secure-node") {
+		t.Errorf("error should mention target name, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "mesh key") {
+		t.Errorf("error should hint about mesh key, got: %s", errOutput)
+	}
+}
+
+func TestCmdPull_ErrorMessage_ConnectionRefused(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Point at a port where nothing is listening.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "dead-node", Address: "127.0.0.1", Port: 19999, Roles: []string{"store"}},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o644)
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	code := cmdPull([]string{"mlx-community/test-model-mlx", "--target", "dead-node"})
+
+	w.Close()
+	os.Stderr = oldStderr
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	errOutput := string(out)
+	if !strings.Contains(errOutput, "dead-node") {
+		t.Errorf("error should mention target name, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "POST /v1/pull") {
+		t.Errorf("error should mention endpoint, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "hint:") {
+		t.Errorf("error should include a hint for connection refused, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "daemon running") {
+		t.Errorf("hint should suggest checking if daemon is running, got: %s", errOutput)
+	}
+}
+
+func TestPullConnectionHint(t *testing.T) {
+	tests := []struct {
+		name    string
+		errMsg  string
+		wantSub string
+	}{
+		{"connection refused", "dial tcp 127.0.0.1:8844: connection refused", "daemon running"},
+		{"timeout", "context deadline exceeded", "unreachable or overloaded"},
+		{"no such host", "dial tcp: lookup badhost: no such host", "resolve hostname"},
+		{"no route", "dial tcp 10.0.0.99:8844: connect: no route to host", "no route"},
+		{"unknown error", "something else went wrong", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := fmt.Errorf("%s", tc.errMsg)
+			hint := pullConnectionHint(err, "target-node")
+			if tc.wantSub == "" {
+				if hint != "" {
+					t.Errorf("expected empty hint, got %q", hint)
+				}
+			} else {
+				if !strings.Contains(hint, tc.wantSub) {
+					t.Errorf("expected hint to contain %q, got %q", tc.wantSub, hint)
+				}
+			}
+		})
+	}
+}
+
+func TestPullStatusHint(t *testing.T) {
+	tests := []struct {
+		code    int
+		wantSub string
+	}{
+		{404, "v0.14+"},
+		{401, "mesh key"},
+		{403, "mesh key"},
+		{503, "starting up"},
+		{200, ""},
+	}
+	for _, tc := range tests {
+		hint := pullStatusHint(tc.code)
+		if tc.wantSub == "" {
+			if hint != "" {
+				t.Errorf("code %d: expected empty hint, got %q", tc.code, hint)
+			}
+		} else {
+			if !strings.Contains(hint, tc.wantSub) {
+				t.Errorf("code %d: expected hint containing %q, got %q", tc.code, tc.wantSub, hint)
+			}
+		}
 	}
 }

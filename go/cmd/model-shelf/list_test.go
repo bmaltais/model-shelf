@@ -185,3 +185,53 @@ func TestCmdList_Help(t *testing.T) {
 		t.Fatal("expected help output")
 	}
 }
+
+func TestCmdList_JSON_SkipsPartialFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Create a shelf with a completed model and a partial download.
+	shelfRoot := filepath.Join(home, "shelf")
+	modelDir := filepath.Join(shelfRoot, "gguf", "Qwen", "Qwen3-0.6B-GGUF")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Completed file — should appear in list.
+	os.WriteFile(filepath.Join(modelDir, "Qwen3-0.6B-Q8_0.gguf"), []byte("complete-data"), 0o644)
+	// Partial file — should NOT appear in list.
+	os.WriteFile(filepath.Join(modelDir, "Qwen3-0.6B-Q4_K_M.gguf.partial"), []byte("partial"), 0o644)
+
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdList([]string{"--json"})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var entries []ShelfEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, out)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (partial should be excluded), got %d: %s", len(entries), out)
+	}
+	if entries[0].Quant != "Q8_0" {
+		t.Errorf("expected Q8_0 entry, got %q", entries[0].Quant)
+	}
+}

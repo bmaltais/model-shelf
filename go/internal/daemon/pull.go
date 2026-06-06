@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 )
@@ -160,14 +163,27 @@ func (d *Daemon) handleJobs(w http.ResponseWriter, r *http.Request) {
 	// Check for ?id= query param.
 	if id := r.URL.Query().Get("id"); id != "" {
 		job := d.jobs.Get(id)
-		if job == nil {
+		if job != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(job)
+			return
+		}
+		// If local=true, only check the local store (prevents recursive proxy).
+		if r.URL.Query().Get("local") == "true" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]string{"error": "job not found"})
 			return
 		}
+		// Job not found locally — proxy to peer nodes (handles gossip propagation window).
+		if peerJob := d.proxyJobLookup(id); peerJob != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(peerJob)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(job)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "job not found"})
 		return
 	}
 
@@ -175,6 +191,48 @@ func (d *Daemon) handleJobs(w http.ResponseWriter, r *http.Request) {
 	jobs := d.jobs.All()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jobs)
+}
+
+// proxyJobLookup queries peer nodes for a job by ID. Returns the first match
+// or nil if no peer has the job. This handles the gossip propagation window
+// where a job exists on the target node but hasn't been replicated yet.
+func (d *Daemon) proxyJobLookup(jobID string) *Job {
+	nodes := d.gossip.Nodes()
+	meshKey := d.cfg.MeshKey
+
+	for _, node := range nodes {
+		if node.Name == d.cfg.Name || node.Status == StatusOffline {
+			continue
+		}
+		hostPort := net.JoinHostPort(node.Address, fmt.Sprintf("%d", node.Port))
+		url := fmt.Sprintf("http://%s/v1/jobs?id=%s&local=true", hostPort, jobID)
+		client := &http.Client{Timeout: 5 * time.Second}
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+		if meshKey != "" {
+			req.Header.Set("Authorization", "Bearer "+meshKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		var job Job
+		if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+		// Merge into local store so subsequent lookups are fast.
+		d.jobs.Merge([]Job{job})
+		return &job
+	}
+	return nil
 }
 
 func safeStr(s *string) string {
