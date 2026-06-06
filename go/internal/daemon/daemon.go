@@ -40,10 +40,12 @@ type HealthResponse struct {
 
 // NodeInfo describes a mesh node.
 type NodeInfo struct {
-	Name    string   `json:"name"`
-	Address string   `json:"address"`
-	Port    int      `json:"port"`
-	Roles   []string `json:"roles"`
+	Name        string   `json:"name"`
+	Address     string   `json:"address"`
+	Port        int      `json:"port"`
+	Roles       []string `json:"roles"`
+	DiskFreeGB  float64  `json:"disk_free_gb,omitempty"`
+	DiskTotalGB float64  `json:"disk_total_gb,omitempty"`
 }
 
 // JoinRequest is sent by a node wanting to join the mesh.
@@ -198,10 +200,12 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		existingNodes = append(existingNodes, NodeInfo{
-			Name:    n.Name,
-			Address: n.Address,
-			Port:    n.Port,
-			Roles:   n.Roles,
+			Name:        n.Name,
+			Address:     n.Address,
+			Port:        n.Port,
+			Roles:       n.Roles,
+			DiskFreeGB:  n.DiskFreeGB,
+			DiskTotalGB: n.DiskTotalGB,
 		})
 	}
 

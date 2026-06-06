@@ -151,11 +151,13 @@ func cmdJoin(args []string) int {
 		}
 		seen[n.Name] = true
 		meshNodes = append(meshNodes, daemon.MeshNode{
-			Name:    n.Name,
-			Address: n.Address,
-			Port:    n.Port,
-			Roles:   n.Roles,
-			Status:  daemon.StatusOnline,
+			Name:        n.Name,
+			Address:     n.Address,
+			Port:        n.Port,
+			Roles:       n.Roles,
+			Status:      daemon.StatusOnline,
+			DiskFreeGB:  n.DiskFreeGB,
+			DiskTotalGB: n.DiskTotalGB,
 		})
 	}
 	if err := daemon.SaveMeshState(meshNodes); err != nil {

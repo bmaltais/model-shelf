@@ -763,10 +763,15 @@ func clarify401(fileURL string) error {
 
 	// HEAD the models API — HF returns 404 for truly nonexistent repos,
 	// 200 or 401/403 for repos that exist but require auth.
+	// However, without a token, HF may return 401 even for non-existent repos.
 	checkURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
 	headReq, err := http.NewRequest("HEAD", checkURL, nil)
 	if err != nil {
 		return fmt.Errorf("HTTP 401 for %s", fileURL)
+	}
+	// Include HF_TOKEN in probe if available — improves disambiguation.
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		headReq.Header.Set("Authorization", "Bearer "+token)
 	}
 	headResp, err := http.DefaultClient.Do(headReq)
 	if err != nil {
@@ -774,11 +779,17 @@ func clarify401(fileURL string) error {
 	}
 	headResp.Body.Close()
 
+	hfTokenSet := os.Getenv("HF_TOKEN") != ""
+
 	switch headResp.StatusCode {
 	case 404:
 		return fmt.Errorf("repository %q not found on Hugging Face", repoID)
 	case 200, 401, 403:
-		return fmt.Errorf("repository %q requires authentication — set HF_TOKEN", repoID)
+		if hfTokenSet {
+			// Token was provided but repo still returned 401/403 — gated or private.
+			return fmt.Errorf("repository %q requires authentication — check HF_TOKEN permissions", repoID)
+		}
+		return fmt.Errorf("repository %q not found or requires authentication — set HF_TOKEN for gated repos", repoID)
 	default:
 		// Unexpected status (429, 5xx, etc.) — fall back to original context.
 		return fmt.Errorf("HTTP 401 for %s (probe returned %d)", fileURL, headResp.StatusCode)
