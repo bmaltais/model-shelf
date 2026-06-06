@@ -184,3 +184,78 @@ func TestAuthMiddleware_MissingKey(t *testing.T) {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
+
+func TestHealthEndpoint_WithGPU(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{
+		Name:      "gpu-node",
+		Port:      8844,
+		Roles:     []string{"executor"},
+		ShelfRoot: t.TempDir(),
+		GPU: &meshconfig.GPUConfig{
+			Name:        "NVIDIA A100-SXM4-80GB",
+			VRAMTotalGB: 80.0,
+		},
+	}
+	d := New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	w := httptest.NewRecorder()
+	d.handleHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp HealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp.GPU == nil {
+		t.Fatal("expected gpu field to be non-nil")
+	}
+	if resp.GPU.Name != "NVIDIA A100-SXM4-80GB" {
+		t.Errorf("gpu name: got %q, want %q", resp.GPU.Name, "NVIDIA A100-SXM4-80GB")
+	}
+	if resp.GPU.VRAMTotalGB != 80.0 {
+		t.Errorf("gpu vram_total_gb: got %f, want 80.0", resp.GPU.VRAMTotalGB)
+	}
+	if resp.GPU.VRAMAvailableGB != 80.0 {
+		t.Errorf("gpu vram_available_gb: got %f, want 80.0", resp.GPU.VRAMAvailableGB)
+	}
+}
+
+func TestHealthEndpoint_NoGPU(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{
+		Name:      "store-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: t.TempDir(),
+		// No GPU config — and no nvidia-smi available in test env.
+	}
+	d := New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	w := httptest.NewRecorder()
+	d.handleHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Parse raw JSON to verify gpu is null.
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	gpuVal, exists := raw["gpu"]
+	if !exists {
+		t.Fatal("expected 'gpu' key in response")
+	}
+	if gpuVal != nil {
+		t.Errorf("expected gpu to be null on node without GPU, got %v", gpuVal)
+	}
+}

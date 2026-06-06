@@ -36,6 +36,7 @@ type MeshNode struct {
 	DiskFreeGB    float64    `json:"disk_free_gb"`
 	DiskTotalGB   float64    `json:"disk_total_gb"`
 	UptimeSeconds float64    `json:"uptime_seconds"`
+	GPU           *GPUInfo   `json:"gpu"`
 	LastSeen      *time.Time `json:"last_seen"`
 }
 
@@ -375,6 +376,10 @@ func (g *Gossip) pollPeers() {
 				nodes[i].DiskTotalGB = hr.DiskTotalGB
 				metricsChanged = true
 			}
+			// Update GPU info from peer health response.
+			if hr.GPU != nil {
+				nodes[i].GPU = hr.GPU
+			}
 			// Update uptime locally but don't trigger event broadcast —
 			// uptime always changes and would cause gossip spam every poll.
 			if hr.UptimeSeconds > 0 {
@@ -419,6 +424,7 @@ func (g *Gossip) pollPeers() {
 					g.nodes[j].DiskFreeGB = updated.DiskFreeGB
 					g.nodes[j].DiskTotalGB = updated.DiskTotalGB
 					g.nodes[j].UptimeSeconds = updated.UptimeSeconds
+					g.nodes[j].GPU = updated.GPU
 					g.nodes[j].LastSeen = updated.LastSeen
 					break
 				}
@@ -446,6 +452,7 @@ type healthResult struct {
 	DiskFreeGB    float64
 	DiskTotalGB   float64
 	UptimeSeconds float64
+	GPU           *GPUInfo
 }
 
 func (g *Gossip) checkHealth(node MeshNode) healthResult {
@@ -467,14 +474,15 @@ func (g *Gossip) checkHealth(node MeshNode) healthResult {
 		return healthResult{}
 	}
 	var hr struct {
-		DiskFreeGB    float64 `json:"disk_free_gb"`
-		DiskTotalGB   float64 `json:"disk_total_gb"`
-		UptimeSeconds float64 `json:"uptime_seconds"`
+		DiskFreeGB    float64  `json:"disk_free_gb"`
+		DiskTotalGB   float64  `json:"disk_total_gb"`
+		UptimeSeconds float64  `json:"uptime_seconds"`
+		GPU           *GPUInfo `json:"gpu"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
 		return healthResult{OK: true}
 	}
-	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds}
+	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds, GPU: hr.GPU}
 }
 
 // fetchPeerJobs fetches jobs from a peer node and merges them into the local store.

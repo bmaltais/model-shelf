@@ -27,6 +27,7 @@ type Daemon struct {
 	gossip    *Gossip
 	inventory *Inventory
 	jobs      *JobStore
+	gpu       *GPUInfo
 }
 
 // HealthResponse is returned by GET /v1/health.
@@ -37,6 +38,7 @@ type HealthResponse struct {
 	DiskTotalGB   float64  `json:"disk_total_gb"`
 	DiskFreeGB    float64  `json:"disk_free_gb"`
 	UptimeSeconds float64  `json:"uptime_seconds"`
+	GPU           *GPUInfo `json:"gpu"`
 }
 
 // NodeInfo describes a mesh node.
@@ -47,6 +49,7 @@ type NodeInfo struct {
 	Roles       []string `json:"roles"`
 	DiskFreeGB  float64  `json:"disk_free_gb,omitempty"`
 	DiskTotalGB float64  `json:"disk_total_gb,omitempty"`
+	GPU         *GPUInfo `json:"gpu"`
 }
 
 // JoinRequest is sent by a node wanting to join the mesh.
@@ -57,6 +60,7 @@ type JoinRequest struct {
 	Roles       []string `json:"roles"`
 	DiskFreeGB  float64  `json:"disk_free_gb,omitempty"`
 	DiskTotalGB float64  `json:"disk_total_gb,omitempty"`
+	GPU         *GPUInfo `json:"gpu"`
 }
 
 // JoinResponse is returned by POST /v1/join.
@@ -65,11 +69,26 @@ type JoinResponse struct {
 	Nodes []NodeInfo `json:"nodes"`
 }
 
+// gpuOverrideFromConfig converts mesh GPU config to a GPUOverride.
+func gpuOverrideFromConfig(gc *meshconfig.GPUConfig) *GPUOverride {
+	if gc == nil {
+		return nil
+	}
+	return &GPUOverride{
+		Name:        gc.Name,
+		VRAMTotalGB: gc.VRAMTotalGB,
+	}
+}
+
 // New creates a new Daemon from config.
 func New(cfg *meshconfig.Config) *Daemon {
+	// Detect GPU hardware (or use manual override from config).
+	gpuInfo := DetectGPU(gpuOverrideFromConfig(cfg.GPU))
+
 	d := &Daemon{
 		cfg:       cfg,
 		startTime: time.Now(),
+		gpu:       gpuInfo,
 	}
 	// Register self as a node.
 	totalGB, freeGB := DiskUsage(cfg.ShelfRoot)
@@ -82,6 +101,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 		Status:      StatusOnline,
 		DiskFreeGB:  freeGB,
 		DiskTotalGB: totalGB,
+		GPU:         gpuInfo,
 		LastSeen:    &now,
 	}
 	// Load or create inventory and scan shelf.
@@ -162,6 +182,9 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	totalGB, freeGB := DiskUsage(d.cfg.ShelfRoot)
 
+	// Refresh GPU available VRAM.
+	d.gpu = RefreshGPUAvailableVRAM(d.gpu, gpuOverrideFromConfig(d.cfg.GPU))
+
 	resp := HealthResponse{
 		Name:          d.cfg.Name,
 		Roles:         d.cfg.Roles,
@@ -169,6 +192,7 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		DiskTotalGB:   totalGB,
 		DiskFreeGB:    freeGB,
 		UptimeSeconds: time.Since(d.startTime).Seconds(),
+		GPU:           d.gpu,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -210,6 +234,7 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 			Roles:       n.Roles,
 			DiskFreeGB:  n.DiskFreeGB,
 			DiskTotalGB: n.DiskTotalGB,
+			GPU:         n.GPU,
 		})
 	}
 
@@ -223,6 +248,7 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Status:      StatusOnline,
 		DiskFreeGB:  req.DiskFreeGB,
 		DiskTotalGB: req.DiskTotalGB,
+		GPU:         req.GPU,
 		LastSeen:    &now,
 	}
 	d.gossip.AddNode(newNode)

@@ -17,14 +17,21 @@ const (
 	DirName     = ".model-shelf"
 )
 
+// GPUConfig holds manual GPU override settings from [gpu] in config.toml.
+type GPUConfig struct {
+	Name        string  `toml:"name"`
+	VRAMTotalGB float64 `toml:"vram_total_gb"`
+}
+
 // Config holds the mesh node configuration.
 type Config struct {
-	Name      string   `toml:"name"`
-	Port      int      `toml:"port"`
-	Roles     []string `toml:"roles"`
-	ShelfRoot string   `toml:"shelf_root"`
-	MeshKey   string   `toml:"-"` // loaded separately from mesh.key file
-	Seeds     []string `toml:"seeds,omitempty"`
+	Name      string     `toml:"name"`
+	Port      int        `toml:"port"`
+	Roles     []string   `toml:"roles"`
+	ShelfRoot string     `toml:"shelf_root"`
+	MeshKey   string     `toml:"-"` // loaded separately from mesh.key file
+	Seeds     []string   `toml:"seeds,omitempty"`
+	GPU       *GPUConfig `toml:"gpu,omitempty"`
 }
 
 // ConfigDir returns the path to ~/.model-shelf/.
