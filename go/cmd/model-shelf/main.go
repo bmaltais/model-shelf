@@ -656,6 +656,7 @@ type ShelfEntry struct {
 	Quant     string `json:"quant,omitempty"`
 	SizeBytes int64  `json:"size_bytes"`
 	Path      string `json:"path"`
+	ShelfRoot string `json:"shelf_root"`
 }
 
 func cmdList(args []string) int {
@@ -678,32 +679,47 @@ func cmdList(args []string) int {
 		return 1
 	}
 
-	if err := resolver.CheckStorageAvailable(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	candidates := resolver.ListShelfCandidates(cfg)
+	if len(candidates) == 0 {
+		fmt.Fprintf(os.Stderr, "error: no shelf directories found\n")
 		return 1
 	}
 
-	if flags["json"] == "true" {
-		entries, errs := collectShelfEntries(cfg.ShelfRoot)
+	var allEntries []ShelfEntry
+	for _, root := range candidates {
+		entries, errs := collectShelfEntries(root)
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", e)
 		}
+		allEntries = append(allEntries, entries...)
+	}
+	if allEntries == nil {
+		allEntries = []ShelfEntry{}
+	}
+
+	if flags["json"] == "true" {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(entries); err != nil {
+		if err := enc.Encode(allEntries); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 
-	printShelfContents(cfg.ShelfRoot)
+	printShelfContentsMulti(candidates, allEntries)
 	return 0
 }
 
 func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 	entries := []ShelfEntry{}
 	var errs []error
+
+	// Verify the root exists before scanning.
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return entries, errs
+	}
+
 	for _, format := range resolver.SupportedFormats {
 		sub := filepath.Join(root, format)
 		info, err := os.Stat(sub)
@@ -755,6 +771,7 @@ func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 							Quant:     quant,
 							SizeBytes: fInfo.Size(),
 							Path:      filepath.Join(repoPath, f.Name()),
+							ShelfRoot: root,
 						})
 					}
 				} else {
@@ -764,6 +781,7 @@ func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 						Format:    format,
 						SizeBytes: size,
 						Path:      repoPath,
+						ShelfRoot: root,
 					})
 				}
 			}
@@ -772,29 +790,34 @@ func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 	return entries, errs
 }
 
-func printShelfContents(root string) {
-	entries, errs := collectShelfEntries(root)
-	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", e)
-	}
-	// Group entries by format for display.
-	byFormat := make(map[string][]ShelfEntry)
-	for _, e := range entries {
-		byFormat[e.Format] = append(byFormat[e.Format], e)
-	}
-	for _, format := range resolver.SupportedFormats {
-		fmt.Printf("\n  %s/\n", format)
-		group := byFormat[format]
-		if len(group) == 0 {
-			fmt.Println("    (empty)")
-			continue
-		}
-		for _, e := range group {
-			name := e.RepoID
-			if e.Quant != "" {
-				name += ":" + e.Quant
+func printShelfContentsMulti(roots []string, allEntries []ShelfEntry) {
+	for _, root := range roots {
+		fmt.Printf("\n  shelf: %s\n", root)
+		// Group entries for this root by format.
+		byFormat := make(map[string][]ShelfEntry)
+		for _, e := range allEntries {
+			if e.ShelfRoot == root {
+				byFormat[e.Format] = append(byFormat[e.Format], e)
 			}
-			fmt.Printf("    %s  %s\n", name, fmtSize(e.SizeBytes))
+		}
+		hasAny := false
+		for _, format := range resolver.SupportedFormats {
+			group := byFormat[format]
+			if len(group) == 0 {
+				continue
+			}
+			hasAny = true
+			fmt.Printf("    %s/\n", format)
+			for _, e := range group {
+				name := e.RepoID
+				if e.Quant != "" {
+					name += ":" + e.Quant
+				}
+				fmt.Printf("      %s  %s\n", name, fmtSize(e.SizeBytes))
+			}
+		}
+		if !hasAny {
+			fmt.Println("    (empty)")
 		}
 	}
 }
