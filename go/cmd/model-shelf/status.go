@@ -145,8 +145,8 @@ func statusAllJobs(addr string, flags map[string]string) int {
 
 	// Sort: active jobs first (by created_at desc), then completed/failed (by done_at desc).
 	sort.Slice(jobs, func(i, j int) bool {
-		iActive := jobs[i].Status == daemon.JobQueued || jobs[i].Status == daemon.JobDownloading || jobs[i].Status == daemon.JobTransferring
-		jActive := jobs[j].Status == daemon.JobQueued || jobs[j].Status == daemon.JobDownloading || jobs[j].Status == daemon.JobTransferring
+		iActive := jobs[i].Status == daemon.JobQueued || jobs[i].Status == daemon.JobDownloading || jobs[i].Status == daemon.JobTransferring || jobs[i].Status == daemon.JobEvicting
+		jActive := jobs[j].Status == daemon.JobQueued || jobs[j].Status == daemon.JobDownloading || jobs[j].Status == daemon.JobTransferring || jobs[j].Status == daemon.JobEvicting
 		if iActive != jActive {
 			return iActive
 		}
