@@ -126,6 +126,8 @@ model-shelf init --role controller,store --shelf /data/models --force
 
 Init creates the shelf directory structure (gguf/, mlx/, safetensors/ subdirectories) and writes the mesh config to `~/.model-shelf/config.toml`. If the node has the `controller` role, a mesh key is generated automatically.
 
+> **Shelf auto-discovery:** If no `shelf_root` is set in config, `resolve` and `list` auto-discover the shelf — first by scanning mounted volumes for a `ModelShelf/models` directory (macOS), then falling back to `~/.cache/model-shelf/models/`. Use `--shelf` during `init` to pin a specific location.
+
 ### Join an existing mesh
 
 After initializing a non-controller node, join the mesh via a controller:
@@ -173,6 +175,9 @@ model-shelf init --role controller,store --shelf /path/to/models
 # Join an existing mesh
 model-shelf join <peer>:<port> --key <mesh-key>
 
+# Leave the mesh (gossips departure to peers, clears mesh state)
+model-shelf leave
+
 # Start the mesh daemon (background service)
 model-shelf service install    # install + enable + start
 model-shelf service start      # start if already installed
@@ -186,6 +191,23 @@ model-shelf daemon [--port <N>]
 # View mesh nodes (status, disk metrics, last seen)
 model-shelf nodes
 model-shelf nodes --json
+
+# List models across all mesh nodes (requires daemon running)
+model-shelf inventory
+model-shelf inventory --json
+
+# Pull a model to a specific node (async, returns job ID)
+model-shelf pull "Qwen/Qwen3-14B-GGUF" --target gpu-box-1 --quant Q4_K_M
+model-shelf pull "mlx-community/Qwen3-14B-4bit" --target mac-mini
+
+# Show job status (downloads, transfers)
+model-shelf status
+model-shelf status <job_id> --json
+
+# Manage node roles
+model-shelf role set controller,store
+model-shelf role add executor
+model-shelf role remove controller
 
 # Search Hugging Face for a loose query
 model-shelf find "qwen 3 4b mlx 4-bit" --format mlx --limit 5
@@ -208,11 +230,47 @@ model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --no-download
 # Emit JSON for scripting.
 model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
 
-# List what's on the curated shelf (all three format subfolders).
+# List what's on the local shelf (all three format subfolders).
 model-shelf list
+model-shelf list --json
 ```
 
 Exit codes: `0` on found/downloaded, `1` on missing.
+
+### JSON output
+
+`model-shelf resolve --json` returns:
+
+```json
+{
+  "status": "found",
+  "source": "local_shelf",
+  "format": "gguf",
+  "path": "/mnt/nas/ai-models/gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf",
+  "checks": [{"location": "shelf", "root": "/mnt/nas/ai-models/gguf", "result": "hit"}]
+}
+```
+
+When a model is missing locally but available on a mesh peer:
+
+```json
+{
+  "status": "missing_locally",
+  "source": "mesh",
+  "format": "gguf",
+  "path": null,
+  "mesh_available": [{"node": "gpu-box-1", "path": "gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf"}],
+  "checks": [{"location": "shelf", "root": "/mnt/nas/ai-models/gguf", "result": "miss"}]
+}
+```
+
+`model-shelf list --json` returns:
+
+```json
+[
+  {"repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "size_bytes": 8320000000, "path": "/mnt/nas/ai-models/gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf"}
+]
+```
 
 ## Agent integration
 
@@ -256,9 +314,10 @@ Format is detected from the repo id (override with `--format`):
 For every resolve request:
 
 1. **Curated shelf** — looks in `shelf_root/<format>/`. Hit → return.
-2. **Download** — if `allow_downloads = true`, calls `huggingface_hub` with `local_dir` pointed at the shelf, so the file lands directly at the friendly path. For GGUF, a single rename normalizes the HF capitalization to lowercase. Otherwise returns `status="missing"`.
+2. **Mesh peers** — if the model is missing locally and the daemon is running, queries other nodes in the mesh. If found on a peer, returns `status="missing_locally"` with `mesh_available` listing which nodes have it.
+3. **Download** — downloads from the Hugging Face Hub REST API directly into the shelf, so the file lands at the friendly path. For GGUF, the actual filename is looked up via the HF API. Pass `--no-download` to skip this step and return `status="missing"` instead.
 
-No parallel cache to manage. `huggingface_hub` writes a small hidden `.cache/huggingface/` subfolder inside the shelf for download metadata (resumability) — it's filtered out of `model-shelf list`.
+Set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
 
 Curated-shelf paths:
 
