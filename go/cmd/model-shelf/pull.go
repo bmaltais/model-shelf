@@ -20,13 +20,14 @@ func cmdPull(args []string) int {
 	positional, flags := parseFlags(args)
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf pull <repo_id> --target <node> [--quant Q] [--format F] [--json]")
+		fmt.Println("Usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--json]")
 		fmt.Println()
 		fmt.Println("Pull a model from Hugging Face to a target node.")
+		fmt.Println("If --target is omitted, auto-selects the best Executor based on VRAM capacity.")
 		fmt.Println("Fire-and-forget: returns a job ID immediately.")
 		fmt.Println()
 		fmt.Println("Flags:")
-		fmt.Println("  --target <node>    Target node name (required)")
+		fmt.Println("  --target <node>    Target node name (auto-selects if omitted)")
 		fmt.Println("  --quant <Q>        Quantization level (required for GGUF)")
 		fmt.Println("  --format <F>       Force format: gguf, mlx, safetensors")
 		fmt.Println("  --json             Emit JSON output")
@@ -34,15 +35,11 @@ func cmdPull(args []string) int {
 	}
 
 	if len(positional) < 1 {
-		fmt.Fprintf(os.Stderr, "usage: model-shelf pull <repo_id> --target <node> [--quant Q] [--format F] [--json]\n")
+		fmt.Fprintf(os.Stderr, "usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--json]\n")
 		return 1
 	}
 	repoID := positional[0]
 	target := flags["target"]
-	if target == "" {
-		fmt.Fprintf(os.Stderr, "error: --target is required\n")
-		return 1
-	}
 
 	// Detect format.
 	format := flags["format"]
@@ -67,6 +64,18 @@ func cmdPull(args []string) int {
 	if format == "gguf" && quant == "" {
 		fmt.Fprintf(os.Stderr, "error: --quant is required for gguf format\n")
 		return 1
+	}
+
+	// If no target specified, use smart placement to auto-select an Executor.
+	var placementResult *daemon.PlacementResult
+	if target == "" {
+		result, err := autoSelectTarget(repoID, format, quant)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		target = result.Target
+		placementResult = result
 	}
 
 	// Look up the target node's address from mesh state.
@@ -143,13 +152,23 @@ func cmdPull(args []string) int {
 	}
 
 	if flags["json"] == "true" {
+		output := struct {
+			daemon.PullResponse
+			Placement *daemon.PlacementResult `json:"placement,omitempty"`
+		}{
+			PullResponse: pullResp,
+			Placement:    placementResult,
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(pullResp)
+		enc.Encode(output)
 	} else {
 		fmt.Printf("  job_id    %s\n", pullResp.JobID)
 		fmt.Printf("  status    %s\n", pullResp.Status)
 		fmt.Printf("  target    %s\n", pullResp.Target)
+		if placementResult != nil {
+			fmt.Printf("  placed    %s (%s)\n", placementResult.Target, placementResult.Reason)
+		}
 	}
 
 	return 0
@@ -227,4 +246,43 @@ func pullStatusHint(statusCode int) string {
 	default:
 		return ""
 	}
+}
+
+// autoSelectTarget uses smart placement to pick the best Executor for a model pull.
+func autoSelectTarget(repoID, format, quant string) (*daemon.PlacementResult, error) {
+	// Load mesh config to talk to daemon.
+	if !meshconfig.Exists() {
+		return nil, fmt.Errorf("no mesh config — run `model-shelf init` first")
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading mesh config: %v", err)
+	}
+
+	// Get mesh nodes from the local daemon.
+	nodes, err := fetchNodes(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("querying mesh nodes: %v", err)
+	}
+
+	// Estimate VRAM requirement from HF API.
+	estimatedVRAMGB, err := daemon.EstimateModelVRAM(repoID, format, quant)
+	if err != nil {
+		return nil, fmt.Errorf("estimating model VRAM: %v", err)
+	}
+
+	// Build per-node inventory map.
+	inventoryByNode := make(map[string][]daemon.InventoryEntry)
+	for _, node := range nodes {
+		if node.Status == daemon.StatusOffline {
+			continue
+		}
+		if !daemon.HasRole(node.Roles, "executor") {
+			continue
+		}
+		entries, _ := fetchNodeInventory(node, cfg)
+		inventoryByNode[node.Name] = entries
+	}
+
+	return daemon.SelectExecutor(nodes, estimatedVRAMGB, repoID, format, quant, inventoryByNode)
 }
