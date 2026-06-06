@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -182,5 +183,98 @@ func TestNormalizePeerAddr(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("normalizePeerAddr(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestCmdJoin_MeshKeyFromEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MODEL_SHELF_MESH_KEY", "env-key-456")
+
+	// Set up local mesh config.
+	cfg := &meshconfig.Config{
+		Name:      "joining-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	// Start a fake peer server that verifies the key from env.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer env-key-456" {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "unauthorized"}`))
+			return
+		}
+		if r.URL.Path == "/v1/join" && r.Method == http.MethodPost {
+			resp := daemon.JoinResponse{
+				OK:    true,
+				Nodes: []daemon.NodeInfo{},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer server.Close()
+
+	peerAddr := strings.TrimPrefix(server.URL, "http://")
+	code := cmdJoin([]string{peerAddr})
+	if code != 0 {
+		t.Fatalf("expected exit 0 with env key, got %d", code)
+	}
+
+	// Verify mesh key was stored.
+	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("mesh.key not written: %v", err)
+	}
+	if strings.TrimSpace(string(keyData)) != "env-key-456" {
+		t.Errorf("unexpected mesh key: %q", string(keyData))
+	}
+}
+
+func TestCmdJoin_NonInteractiveNoKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MODEL_SHELF_MESH_KEY", "") // ensure env is unset
+
+	// Set up local mesh config.
+	cfg := &meshconfig.Config{
+		Name:      "joining-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	// Replace stdin with a pipe (non-interactive).
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	w.Close() // close write end immediately — simulates non-interactive
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	// Capture stderr.
+	oldStderr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	code := cmdJoin([]string{"somehost:8844"})
+
+	wErr.Close()
+	os.Stderr = oldStderr
+	errOut, _ := io.ReadAll(rErr)
+
+	if code != 1 {
+		t.Fatalf("expected exit 1 in non-interactive mode without key, got %d", code)
+	}
+	if !strings.Contains(string(errOut), "mesh key is required") {
+		t.Errorf("expected 'mesh key is required' error, got: %q", string(errOut))
+	}
+	if !strings.Contains(string(errOut), "MODEL_SHELF_MESH_KEY") {
+		t.Errorf("expected hint about MODEL_SHELF_MESH_KEY, got: %q", string(errOut))
 	}
 }

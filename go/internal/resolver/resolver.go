@@ -314,6 +314,7 @@ func ListShelfCandidates(cfg *Config) []string {
 }
 
 // DiscoverPrimaryShelf picks a default primary shelf when config doesn't pin one.
+// Returns an empty string if no initialized shelf is found.
 func DiscoverPrimaryShelf() string {
 	vDir := volumesDir()
 	if vDir != "" {
@@ -333,8 +334,30 @@ func DiscoverPrimaryShelf() string {
 		}
 	}
 
+	// Only return the fallback cache path if it already exists and is initialized
+	// (has at least one format subdirectory). This prevents silently downloading
+	// models into an invisible location.
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cache", "model-shelf", "models")
+	fallback := filepath.Join(home, ".cache", "model-shelf", "models")
+	if isInitializedShelf(fallback) {
+		return fallback
+	}
+	return ""
+}
+
+// isInitializedShelf checks if a shelf root has been properly initialized
+// (exists as a directory with at least one format subdirectory).
+func isInitializedShelf(root string) bool {
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	for _, format := range SupportedFormats {
+		if info, err := os.Stat(filepath.Join(root, format)); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckStorageAvailable verifies the shelf is accessible.

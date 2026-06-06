@@ -90,6 +90,9 @@ Usage:
 Join flags:
   --key <key>        Mesh key (prompts if not provided)
 
+Environment:
+  MODEL_SHELF_MESH_KEY   Mesh key for join (used when --key is not provided)
+
 Pull flags:
   --target <node>    Target node name (required)
   --quant <Q>        Quantization level (required for GGUF)
