@@ -224,6 +224,8 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 	}
 
 	// Step 2: Filter by VRAM capacity.
+	// Exception: nodes that already have the model on disk bypass the VRAM check —
+	// they can serve from disk even without sufficient VRAM (CPU inference).
 	var candidates []struct {
 		Node       MeshNode
 		HasModel   bool
@@ -236,7 +238,10 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 		if n.GPU != nil {
 			vramTotal = n.GPU.VRAMTotalGB
 		}
-		if vramTotal < estimatedVRAMGB {
+		// Check if this node already has the model.
+		hasModel := nodeHasModel(inventoryByNode[n.Name], repoID, format, quant)
+
+		if vramTotal < estimatedVRAMGB && !hasModel {
 			insufficientCandidates = append(insufficientCandidates, PlacementCandidate{
 				Name:        n.Name,
 				VRAMTotalGB: vramTotal,
@@ -244,8 +249,6 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 			})
 			continue
 		}
-		// Check if this node already has the model.
-		hasModel := nodeHasModel(inventoryByNode[n.Name], repoID, format, quant)
 		// Check if this node is not currently serving (has no active jobs).
 		notServing := activeJobCountByNode[n.Name] == 0
 
