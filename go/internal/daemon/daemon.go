@@ -25,6 +25,7 @@ type Daemon struct {
 	server    *http.Server
 	gossip    *Gossip
 	inventory *Inventory
+	jobs      *JobStore
 }
 
 // HealthResponse is returned by GET /v1/health.
@@ -95,6 +96,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 		}
 	}
 	d.inventory = inv
+	d.jobs = NewJobStore()
 
 	return d
 }
@@ -107,6 +109,8 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/nodes", d.handleNodes)
 	mux.HandleFunc("/v1/events", d.handleEvents)
 	mux.HandleFunc("/v1/inventory", d.handleInventory)
+	mux.HandleFunc("/v1/pull", d.handlePull)
+	mux.HandleFunc("/v1/jobs", d.handleJobs)
 
 	handler := d.authMiddleware(mux)
 
