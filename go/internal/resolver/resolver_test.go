@@ -287,6 +287,7 @@ func TestClarify401_RepoNotFound(t *testing.T) {
 
 func TestClarify401_RepoRequiresAuth(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HF_TOKEN", "test-token")
 
 	// Server returns 200 for the API check (repo exists but is private).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -304,6 +305,33 @@ func TestClarify401_RepoRequiresAuth(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "requires authentication") {
 		t.Errorf("unexpected error: %s", got)
+	}
+}
+
+func TestClarify401_NoToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HF_TOKEN", "")
+
+	// Server returns 401 for the API check (no token, ambiguous).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	err := clarify401("https://huggingface.co/fake-user/fake-repo/resolve/main/file.gguf")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "not found or requires authentication") {
+		t.Errorf("unexpected error: %s", got)
+	}
+	if !strings.Contains(got, "set HF_TOKEN for gated repos") {
+		t.Errorf("expected hint about HF_TOKEN for gated repos, got: %s", got)
 	}
 }
 

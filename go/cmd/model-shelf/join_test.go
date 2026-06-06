@@ -278,3 +278,80 @@ func TestCmdJoin_NonInteractiveNoKey(t *testing.T) {
 		t.Errorf("expected hint about MODEL_SHELF_MESH_KEY, got: %q", string(errOut))
 	}
 }
+
+func TestCmdJoin_DiskMetricsPropagated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Set up local mesh config.
+	cfg := &meshconfig.Config{
+		Name:      "joining-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	// Start a fake peer server that returns disk metrics in the join response.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/v1/join" && r.Method == http.MethodPost {
+			resp := daemon.JoinResponse{
+				OK: true,
+				Nodes: []daemon.NodeInfo{
+					{
+						Name:        "controller",
+						Address:     "10.0.0.1",
+						Port:        8844,
+						Roles:       []string{"controller", "store"},
+						DiskFreeGB:  512.5,
+						DiskTotalGB: 1024.0,
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer server.Close()
+
+	peerAddr := strings.TrimPrefix(server.URL, "http://")
+
+	code := cmdJoin([]string{peerAddr, "--key", "test-key"})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	// Verify disk metrics were persisted to mesh.json.
+	statePath := filepath.Join(home, ".model-shelf", "state", "mesh.json")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("mesh.json not written: %v", err)
+	}
+	var nodes []daemon.MeshNode
+	if err := json.Unmarshal(stateData, &nodes); err != nil {
+		t.Fatalf("invalid mesh.json: %v", err)
+	}
+
+	// Find the controller node and verify disk metrics.
+	var found bool
+	for _, n := range nodes {
+		if n.Name == "controller" {
+			found = true
+			if n.DiskFreeGB != 512.5 {
+				t.Errorf("DiskFreeGB = %f, want 512.5", n.DiskFreeGB)
+			}
+			if n.DiskTotalGB != 1024.0 {
+				t.Errorf("DiskTotalGB = %f, want 1024.0", n.DiskTotalGB)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("controller node not found in mesh.json: %+v", nodes)
+	}
+}

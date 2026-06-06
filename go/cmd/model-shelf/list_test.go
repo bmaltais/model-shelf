@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -233,5 +234,48 @@ func TestCmdList_JSON_SkipsPartialFiles(t *testing.T) {
 	}
 	if entries[0].Quant != "Q8_0" {
 		t.Errorf("expected Q8_0 entry, got %q", entries[0].Quant)
+	}
+}
+
+func TestCmdList_HumanReadable_ShowsQuant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	modelDir := filepath.Join(shelfRoot, "gguf", "unsloth", "Qwen3-0.6B-GGUF")
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(modelDir, "Qwen3-0.6B-Q4_K_M.gguf"), []byte("q4data"), 0o644)
+	os.WriteFile(filepath.Join(modelDir, "Qwen3-0.6B-Q8_0.gguf"), []byte("q8datadata"), 0o644)
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Capture stdout (human-readable output, no --json).
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdList([]string{})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	output := string(out)
+	if !strings.Contains(output, "unsloth/Qwen3-0.6B-GGUF:Q4_K_M") {
+		t.Errorf("expected quant Q4_K_M in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "unsloth/Qwen3-0.6B-GGUF:Q8_0") {
+		t.Errorf("expected quant Q8_0 in output, got:\n%s", output)
 	}
 }

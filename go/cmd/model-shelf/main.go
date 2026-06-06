@@ -601,6 +601,11 @@ func cmdFind(args []string) int {
 		return 1
 	}
 	query := strings.Join(positional, " ")
+	if strings.TrimSpace(query) == "" {
+		fmt.Fprintf(os.Stderr, "error: query cannot be empty\n")
+		fmt.Fprintf(os.Stderr, "usage: model-shelf find <query> [--format F] [--limit N] [--json]\n")
+		return 1
+	}
 	format := flags["format"]
 	limit := 10
 	if l, ok := flags["limit"]; ok {
@@ -782,7 +787,11 @@ func printShelfContents(root string) {
 			continue
 		}
 		for _, e := range group {
-			fmt.Printf("    %s  %s\n", e.RepoID, fmtSize(e.SizeBytes))
+			name := e.RepoID
+			if e.Quant != "" {
+				name += ":" + e.Quant
+			}
+			fmt.Printf("    %s  %s\n", name, fmtSize(e.SizeBytes))
 		}
 	}
 }
