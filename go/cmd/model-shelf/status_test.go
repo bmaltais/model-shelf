@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,10 +188,10 @@ func TestCmdStatus_MeshFlag(t *testing.T) {
 		},
 	}
 
-	var gotMeshParam bool
+	var gotMeshParam atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("mesh") == "true" {
-			gotMeshParam = true
+			gotMeshParam.Store(true)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(localJobs)
@@ -203,7 +204,7 @@ func TestCmdStatus_MeshFlag(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
-	if !gotMeshParam {
+	if !gotMeshParam.Load() {
 		t.Fatal("expected ?mesh=true query parameter to be sent to daemon")
 	}
 }

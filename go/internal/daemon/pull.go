@@ -249,8 +249,7 @@ func (d *Daemon) aggregateMeshJobs() []Job {
 	localJobs := d.jobs.All()
 	seen := make(map[string]*Job, len(localJobs))
 	for i := range localJobs {
-		j := localJobs[i]
-		seen[j.ID] = &j
+		seen[localJobs[i].ID] = &localJobs[i]
 	}
 
 	// Query each peer node for their local jobs.
