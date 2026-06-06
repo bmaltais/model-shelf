@@ -11,11 +11,12 @@ import (
 type JobStatus string
 
 const (
-	JobQueued       JobStatus = "queued"
-	JobDownloading  JobStatus = "downloading"
-	JobTransferring JobStatus = "transferring"
-	JobCompleted    JobStatus = "completed"
-	JobFailed       JobStatus = "failed"
+	JobQueued         JobStatus = "queued"
+	JobDownloading    JobStatus = "downloading"
+	JobTransferring   JobStatus = "transferring"
+	JobCompleted      JobStatus = "completed"
+	JobAlreadyPresent JobStatus = "already_present"
+	JobFailed         JobStatus = "failed"
 )
 
 // retentionPeriod is how long completed/failed jobs are kept before pruning.
@@ -119,6 +120,19 @@ func (s *JobStore) SetCompleted(id string) {
 	}
 }
 
+// SetAlreadyPresent marks a job as skipped because the model was already on disk.
+func (s *JobStore) SetAlreadyPresent(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j, ok := s.jobs[id]; ok {
+		j.Status = JobAlreadyPresent
+		j.BytesDownloaded = 0
+		j.BytesTotal = 0
+		now := time.Now()
+		j.DoneAt = &now
+	}
+}
+
 // SetFailed marks a job as failed with an error message.
 func (s *JobStore) SetFailed(id string, errMsg string) {
 	s.mu.Lock()
@@ -173,7 +187,7 @@ func jobStateOrder(s JobStatus) int {
 		return 0
 	case JobDownloading, JobTransferring:
 		return 1
-	case JobCompleted, JobFailed:
+	case JobCompleted, JobAlreadyPresent, JobFailed:
 		return 2
 	default:
 		return -1

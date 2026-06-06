@@ -114,6 +114,13 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 		return
 	}
 
+	// If the model was already on disk (no download occurred), mark as such.
+	if result.Status == "found" {
+		d.jobs.SetAlreadyPresent(jobID)
+		log.Printf("pull: job %s skipped — %s already present at %s", jobID, repoID, safeStr(result.Path))
+		return
+	}
+
 	// Update inventory with lock to prevent concurrent Save races.
 	if result.Path != nil {
 		var size int64

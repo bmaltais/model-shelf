@@ -260,6 +260,48 @@ func TestExecutePull_InvalidRepo(t *testing.T) {
 	}
 }
 
+func TestExecutePull_AlreadyPresent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HF_TOKEN", "")
+	t.Setenv("HUGGING_FACE_HUB_TOKEN", "")
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	// Place an MLX model on the shelf so resolver finds it locally.
+	// Use mlx format (directory-based) to avoid HF API filename lookup issues.
+	mlxDir := filepath.Join(shelfRoot, "mlx", "testorg", "testmodel")
+	os.MkdirAll(mlxDir, 0o755)
+	os.WriteFile(filepath.Join(mlxDir, "config.json"), []byte("{}"), 0o644)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
+	d.executePull(job.ID, "testorg/testmodel", "mlx", "")
+
+	got := d.jobs.Get(job.ID)
+	if got.Status != JobAlreadyPresent {
+		t.Fatalf("expected already_present status, got %s (error: %s)", got.Status, got.Error)
+	}
+	if got.BytesDownloaded != 0 {
+		t.Errorf("expected bytes_downloaded=0, got %d", got.BytesDownloaded)
+	}
+	if got.BytesTotal != 0 {
+		t.Errorf("expected bytes_total=0, got %d", got.BytesTotal)
+	}
+	if got.DoneAt == nil {
+		t.Error("expected DoneAt to be set")
+	}
+}
+
 // TestPullEndpointAuth verifies that pull requires mesh key when configured.
 func TestPullEndpointAuth(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

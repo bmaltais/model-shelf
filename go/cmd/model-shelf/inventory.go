@@ -104,11 +104,15 @@ func fetchNodes(cfg *meshconfig.Config) ([]daemon.MeshNode, error) {
 }
 
 // aggregateInventory queries each node's /v1/inventory and builds a combined list.
+// Emits a warning to stderr for each unreachable node (fixes #116).
 func aggregateInventory(nodes []daemon.MeshNode, cfg *meshconfig.Config) []InventoryRow {
 	rows := []InventoryRow{}
 
 	for _, node := range nodes {
 		entries, stale := fetchNodeInventory(node, cfg)
+		if stale {
+			fmt.Fprintf(os.Stderr, "warning: %s unreachable — models not listed\n", node.Name)
+		}
 		for _, e := range entries {
 			rows = append(rows, InventoryRow{
 				Node:      node.Name,
