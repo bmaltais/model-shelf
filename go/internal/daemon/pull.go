@@ -125,7 +125,14 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 		}
 	}
 
-	// Step 3: Fall back to downloading from Hugging Face.
+	// Step 3: Check disk space and evict if needed before downloading.
+	if err := d.evictIfNeeded(jobID, repoID, format, quant); err != nil {
+		d.jobs.SetFailed(jobID, err.Error())
+		log.Printf("pull: job %s failed: eviction error: %v", jobID, err)
+		return
+	}
+
+	// Step 4: Fall back to downloading from Hugging Face.
 	d.jobs.SetDownloading(jobID)
 	cfg := &resolver.Config{
 		ShelfRoot:      d.cfg.ShelfRoot,

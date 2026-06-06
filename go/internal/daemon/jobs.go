@@ -14,6 +14,7 @@ const (
 	JobQueued         JobStatus = "queued"
 	JobDownloading    JobStatus = "downloading"
 	JobTransferring   JobStatus = "transferring"
+	JobEvicting       JobStatus = "evicting"
 	JobCompleted      JobStatus = "completed"
 	JobAlreadyPresent JobStatus = "already_present"
 	JobFailed         JobStatus = "failed"
@@ -96,6 +97,15 @@ func (s *JobStore) SetTransferring(id string) {
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
 		j.Status = JobTransferring
+	}
+}
+
+// SetEvicting marks a job as evicting (freeing space for a pull).
+func (s *JobStore) SetEvicting(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j, ok := s.jobs[id]; ok {
+		j.Status = JobEvicting
 	}
 }
 
@@ -185,7 +195,7 @@ func jobStateOrder(s JobStatus) int {
 	switch s {
 	case JobQueued:
 		return 0
-	case JobDownloading, JobTransferring:
+	case JobDownloading, JobTransferring, JobEvicting:
 		return 1
 	case JobCompleted, JobAlreadyPresent, JobFailed:
 		return 2
