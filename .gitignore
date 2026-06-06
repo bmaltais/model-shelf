@@ -24,3 +24,4 @@ config.local.toml
 .pytest_cache/
 .coverage
 htmlcov/
+graphify-out/
