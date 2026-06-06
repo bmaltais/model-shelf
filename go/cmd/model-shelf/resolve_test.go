@@ -247,4 +247,11 @@ func TestCmdResolve_MeshPeersQueried(t *testing.T) {
 	if result.MeshAvailable[0].Node != "mini1" {
 		t.Errorf("expected mesh_available[0].node to be 'mini1', got %q", result.MeshAvailable[0].Node)
 	}
+	if result.MeshAvailable[0].Path == "" {
+		t.Errorf("expected mesh_available[0].path to be non-empty")
+	}
+	// Path should be a relative shelf path like "gguf/bartowski/Llama-3.2-1B-Instruct-GGUF/<file>.gguf"
+	if !strings.HasPrefix(result.MeshAvailable[0].Path, "gguf/bartowski/") {
+		t.Errorf("expected mesh_available[0].path to start with 'gguf/bartowski/', got %q", result.MeshAvailable[0].Path)
+	}
 }

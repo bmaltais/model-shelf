@@ -316,12 +316,19 @@ func queryMeshPeers(repoID, format, quant string) []resolver.MeshLocation {
 			if format == "gguf" && !strings.EqualFold(e.Quant, quant) {
 				continue
 			}
-			// Construct the expected path on the peer.
+			// Construct a relative path representing where the model lives
+			// under the peer's shelf_root (e.g. "gguf/publisher/repo/file.gguf").
 			var peerPath string
 			if format == "gguf" {
-				peerPath, _ = resolver.ShelfPathGGUF("", repoID, quant)
+				p, err := resolver.ShelfPathGGUF("/", repoID, quant)
+				if err == nil {
+					peerPath = strings.TrimPrefix(filepath.ToSlash(p), "/")
+				}
 			} else {
-				peerPath, _ = resolver.ShelfPathSnapshot("", repoID, format)
+				p, err := resolver.ShelfPathSnapshot("/", repoID, format)
+				if err == nil {
+					peerPath = strings.TrimPrefix(filepath.ToSlash(p), "/")
+				}
 			}
 			locations = append(locations, resolver.MeshLocation{
 				Node: node.Name,
@@ -515,8 +522,9 @@ func cmdInit(args []string) int {
 }
 
 // broadcastLeaveForOldNode sends a leave event for the old node name to all
-// known mesh peers. This prevents phantom nodes when init --force changes the
-// node name. Best-effort — failures are logged but not fatal.
+// known online mesh peers. This prevents phantom nodes when init --force changes
+// the node name. Best-effort — failures are silently ignored since daemon restart
+// will handle gossip convergence.
 func broadcastLeaveForOldNode(oldCfg *meshconfig.Config) {
 	// Load mesh state to find peers to notify.
 	nodes, err := daemon.LoadMeshState()
@@ -541,6 +549,9 @@ func broadcastLeaveForOldNode(oldCfg *meshconfig.Config) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, node := range nodes {
 		if node.Name == oldCfg.Name {
+			continue
+		}
+		if node.Status == daemon.StatusOffline {
 			continue
 		}
 		url := fmt.Sprintf("http://%s:%d/v1/events", node.Address, node.Port)

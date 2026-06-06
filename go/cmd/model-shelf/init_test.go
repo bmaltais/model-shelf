@@ -468,3 +468,122 @@ func TestCmdInit_ForceNameChangeRemovesOldNodeFromState(t *testing.T) {
 		t.Errorf("peer 'mini1' should still be in mesh state")
 	}
 }
+
+func TestCmdInit_ForceNameChangeSendsLeaveEventToPeers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// First init with name "localtest".
+	code := cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "localtest"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Start a fake peer that records whether a leave event was received.
+	var receivedLeave bool
+	var leaveName string
+	peerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/events" && r.Method == http.MethodPost {
+			var ev daemon.Event
+			if err := json.NewDecoder(r.Body).Decode(&ev); err == nil {
+				if ev.Type == daemon.EventLeave {
+					receivedLeave = true
+					leaveName = ev.Node.Name
+				}
+			}
+			w.Write([]byte(`{"ok": true}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	peerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	peerPort := peerLn.Addr().(*net.TCPAddr).Port
+	peerServer := &httptest.Server{Listener: peerLn, Config: &http.Server{Handler: peerHandler}}
+	peerServer.Start()
+	defer peerServer.Close()
+
+	// Simulate mesh state with peer node.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "localtest", Address: "127.0.0.1", Port: 8844, Status: daemon.StatusOnline},
+		{Name: "mini1", Address: "127.0.0.1", Port: peerPort, Status: daemon.StatusOnline},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o600)
+
+	// Re-init with --force and a different name.
+	code = cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "ocilab1", "--force"})
+	if code != 0 {
+		t.Fatalf("force init with new name failed with code %d", code)
+	}
+
+	// Verify the leave event was POSTed to the peer.
+	if !receivedLeave {
+		t.Errorf("expected leave event to be POSTed to peer, but none was received")
+	}
+	if leaveName != "localtest" {
+		t.Errorf("expected leave event for 'localtest', got %q", leaveName)
+	}
+}
+
+func TestCmdInit_ForceSameNameDoesNotSendLeave(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// First init with name "ocilab1".
+	code := cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "ocilab1"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Start a fake peer that records whether a leave event was received.
+	var receivedLeave bool
+	peerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/events" && r.Method == http.MethodPost {
+			var ev daemon.Event
+			if err := json.NewDecoder(r.Body).Decode(&ev); err == nil {
+				if ev.Type == daemon.EventLeave {
+					receivedLeave = true
+				}
+			}
+			w.Write([]byte(`{"ok": true}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	peerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	peerPort := peerLn.Addr().(*net.TCPAddr).Port
+	peerServer := &httptest.Server{Listener: peerLn, Config: &http.Server{Handler: peerHandler}}
+	peerServer.Start()
+	defer peerServer.Close()
+
+	// Simulate mesh state with peer node.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "ocilab1", Address: "127.0.0.1", Port: 8844, Status: daemon.StatusOnline},
+		{Name: "mini1", Address: "127.0.0.1", Port: peerPort, Status: daemon.StatusOnline},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o600)
+
+	// Re-init with --force but SAME name.
+	code = cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "ocilab1", "--force"})
+	if code != 0 {
+		t.Fatalf("force init with same name failed with code %d", code)
+	}
+
+	// Verify NO leave event was sent.
+	if receivedLeave {
+		t.Errorf("did not expect leave event when name is unchanged, but one was received")
+	}
+}
