@@ -21,7 +21,9 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/service"
 )
 
-const version = "0.15.0"
+// version is set at build time via -ldflags "-X main.version=..."
+// Falls back to "dev" for local builds.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -96,7 +98,7 @@ Environment:
   MODEL_SHELF_MESH_KEY   Mesh key for join (used when --key is not provided)
 
 Pull flags:
-  --target <node>    Target node name (required)
+  --target <node>    Target node (auto-selected via smart placement if omitted)
   --quant <Q>        Quantization level (required for GGUF)
   --format <F>       Force format: gguf, mlx, safetensors
   --json             Emit JSON output
