@@ -588,6 +588,7 @@ func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 						}
 						fInfo, err := f.Info()
 						if err != nil {
+							errs = append(errs, fmt.Errorf("stat %s: %w", filepath.Join(repoPath, f.Name()), err))
 							continue
 						}
 						quant := daemon.ExtractQuant(f.Name())
