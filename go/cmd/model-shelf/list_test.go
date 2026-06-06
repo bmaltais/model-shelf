@@ -279,3 +279,65 @@ func TestCmdList_HumanReadable_ShowsQuant(t *testing.T) {
 		t.Errorf("expected quant Q8_0 in output, got:\n%s", output)
 	}
 }
+
+func TestCmdList_JSON_IncludesFallbackShelf(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Primary shelf with one model.
+	shelfRoot := filepath.Join(home, "shelf")
+	modelDir := filepath.Join(shelfRoot, "gguf", "publisher", "model-A-GGUF")
+	os.MkdirAll(modelDir, 0o755)
+	os.WriteFile(filepath.Join(modelDir, "model-A-Q4_K_M.gguf"), []byte("primary"), 0o644)
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	// Fallback shelf (~/.cache/model-shelf/models/) with a different model.
+	fallback := filepath.Join(home, ".cache", "model-shelf", "models")
+	fallbackModel := filepath.Join(fallback, "gguf", "publisher", "model-B-GGUF")
+	os.MkdirAll(fallbackModel, 0o755)
+	os.WriteFile(filepath.Join(fallbackModel, "model-B-Q8_0.gguf"), []byte("fallback"), 0o644)
+	os.MkdirAll(filepath.Join(fallback, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(fallback, "safetensors"), 0o755)
+
+	// Config points to primary shelf.
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdList([]string{"--json"})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, out)
+	}
+
+	var entries []ShelfEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, out)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (primary + fallback), got %d: %s", len(entries), out)
+	}
+
+	// Check both models are present with correct shelf_root.
+	found := map[string]string{}
+	for _, e := range entries {
+		found[e.RepoID] = e.ShelfRoot
+	}
+	if found["publisher/model-A-GGUF"] != shelfRoot {
+		t.Errorf("model-A should be in primary shelf %q, got %q", shelfRoot, found["publisher/model-A-GGUF"])
+	}
+	if found["publisher/model-B-GGUF"] != fallback {
+		t.Errorf("model-B should be in fallback shelf %q, got %q", fallback, found["publisher/model-B-GGUF"])
+	}
+}

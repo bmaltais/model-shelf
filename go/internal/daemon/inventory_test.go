@@ -318,3 +318,45 @@ func TestInventory_ScanSkipsPartialFiles(t *testing.T) {
 		t.Errorf("expected Q8_0 entry, got %q", entries[0].Quant)
 	}
 }
+
+func TestInventory_ScanShelf_PicksUpExternallyAdded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelf := t.TempDir()
+	os.MkdirAll(filepath.Join(shelf, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelf, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelf, "safetensors"), 0o755)
+
+	inv := NewInventory()
+
+	// Initial scan — shelf is empty.
+	if err := inv.ScanShelf(shelf); err != nil {
+		t.Fatalf("initial scan failed: %v", err)
+	}
+	if len(inv.Entries()) != 0 {
+		t.Fatalf("expected 0 entries initially, got %d", len(inv.Entries()))
+	}
+
+	// Simulate a model added externally (e.g. via resolve download).
+	ggufDir := filepath.Join(shelf, "gguf", "unsloth", "Qwen3-0.6B-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-0.6B-Q4_K_M.gguf"), make([]byte, 200), 0o644)
+
+	// Re-scan — should pick up the new model.
+	if err := inv.ScanShelf(shelf); err != nil {
+		t.Fatalf("rescan failed: %v", err)
+	}
+	entries := inv.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after rescan, got %d", len(entries))
+	}
+	if entries[0].RepoID != "unsloth/Qwen3-0.6B-GGUF" {
+		t.Errorf("expected repo_id unsloth/Qwen3-0.6B-GGUF, got %q", entries[0].RepoID)
+	}
+	if entries[0].Quant != "Q4_K_M" {
+		t.Errorf("expected quant Q4_K_M, got %q", entries[0].Quant)
+	}
+	if entries[0].SizeBytes != 200 {
+		t.Errorf("expected size 200, got %d", entries[0].SizeBytes)
+	}
+}
