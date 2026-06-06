@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -219,18 +221,42 @@ func cmdResolve(args []string) int {
 		quant = ""
 	}
 
-	result, err := resolver.ResolveModel(cfg, repoID, format, quant)
+	// First check local shelf (without downloading).
+	localCfg := &resolver.Config{
+		ShelfRoot:      cfg.ShelfRoot,
+		AllowDownloads: false,
+	}
+	result, err := resolver.ResolveModel(localCfg, repoID, format, quant)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
-	// When model is missing locally, check mesh peers for availability.
+	// If not found locally, check mesh peers and attempt peer transfer before HF.
 	if result.Status == "missing" {
-		if meshPeers := queryMeshPeers(repoID, format, quant); len(meshPeers) > 0 {
-			result.Status = "missing_locally"
-			result.Source = "mesh"
-			result.MeshAvailable = meshPeers
+		meshPeers := queryMeshPeers(repoID, format, quant)
+		if len(meshPeers) > 0 {
+			if cfg.AllowDownloads {
+				// Attempt pull from a mesh peer via the local daemon.
+				if peerResult := pullFromMeshPeer(repoID, format, quant, cfg.ShelfRoot); peerResult != nil {
+					result = peerResult
+				}
+			}
+			// If peer transfer didn't work (or downloads disabled), mark as mesh-available.
+			if result.Status == "missing" {
+				result.Status = "missing_locally"
+				result.Source = "mesh"
+				result.MeshAvailable = meshPeers
+			}
+		}
+	}
+
+	// If still missing and downloads are allowed, fall back to HF download.
+	if result.Status == "missing" && cfg.AllowDownloads {
+		result, err = resolver.ResolveModel(cfg, repoID, format, quant)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
 		}
 	}
 
@@ -351,6 +377,91 @@ func queryMeshPeers(repoID, format, quant string) []resolver.MeshLocation {
 func fetchPeerInventoryForResolve(node daemon.MeshNode, cfg *meshconfig.Config) []daemon.InventoryEntry {
 	entries, _ := fetchNodeInventory(node, cfg)
 	return entries
+}
+
+// pullFromMeshPeer triggers a pull via the local daemon (which prefers peer transfer
+// over HF) and waits for it to complete. Returns a ResolveResult on success, nil on failure.
+func pullFromMeshPeer(repoID, format, quant, shelfRoot string) *resolver.ResolveResult {
+	if !meshconfig.Exists() {
+		return nil
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		return nil
+	}
+
+	// POST /v1/pull to the local daemon.
+	pullReq := daemon.PullRequest{
+		RepoID: repoID,
+		Format: format,
+		Quant:  quant,
+	}
+	body, _ := json.Marshal(pullReq)
+	addr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", cfg.Port))
+	url := fmt.Sprintf("http://%s/v1/pull", addr)
+
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if cfg.MeshKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		return nil
+	}
+
+	var pullResp daemon.PullResponse
+	respBody, _ := io.ReadAll(resp.Body)
+	if json.Unmarshal(respBody, &pullResp) != nil {
+		return nil
+	}
+
+	// Poll the job until completion (with timeout).
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		jobURL := fmt.Sprintf("http://%s/v1/jobs?id=%s", addr, pullResp.JobID)
+		jobReq, _ := http.NewRequest(http.MethodGet, jobURL, nil)
+		if cfg.MeshKey != "" {
+			jobReq.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
+		}
+		jobResp, err := client.Do(jobReq)
+		if err != nil {
+			continue
+		}
+		var job daemon.Job
+		jobBody, _ := io.ReadAll(jobResp.Body)
+		jobResp.Body.Close()
+		if json.Unmarshal(jobBody, &job) != nil {
+			continue
+		}
+		switch job.Status {
+		case daemon.JobCompleted, daemon.JobAlreadyPresent:
+			// Re-resolve locally to get the path.
+			localCfg := &resolver.Config{
+				ShelfRoot:      shelfRoot,
+				AllowDownloads: false,
+			}
+			result, err := resolver.ResolveModel(localCfg, repoID, format, quant)
+			if err == nil && result.Status == "found" {
+				result.Source = "mesh"
+				return result
+			}
+			return nil
+		case daemon.JobFailed:
+			return nil
+		}
+	}
+	return nil
 }
 
 func cmdInit(args []string) int {

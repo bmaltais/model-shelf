@@ -205,6 +205,55 @@ func TestSelectExecutor_NoGPUTreatedAsZeroVRAM(t *testing.T) {
 	}
 }
 
+func TestSelectExecutor_CPUOnlyNodeWithModelOnDisk(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	nodes := []MeshNode{
+		{Name: "cpu-node", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 500, GPU: nil},
+		{Name: "gpu-node", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 100,
+			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
+	}
+
+	// cpu-node already has the model on disk — should bypass VRAM filter.
+	inventoryByNode := map[string][]InventoryEntry{
+		"cpu-node": {{RepoID: "unsloth/Qwen3-0.6B-GGUF", Format: "gguf", Quant: "Q4_K_M", SizeBytes: 400000000}},
+	}
+
+	result, err := SelectExecutor(nodes, 0.4, "unsloth/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M", inventoryByNode, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Target != "cpu-node" {
+		t.Errorf("expected cpu-node (has model on disk, bypasses VRAM filter), got %s", result.Target)
+	}
+	if result.Reason != "already has model on disk and not currently serving" {
+		t.Errorf("unexpected reason: %s", result.Reason)
+	}
+}
+
+func TestSelectExecutor_CPUOnlyNodeWithoutModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// CPU-only node without the model should still be rejected by VRAM filter.
+	nodes := []MeshNode{
+		{Name: "cpu-node", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 500, GPU: nil},
+		{Name: "gpu-node", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 100,
+			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
+	}
+
+	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Target != "gpu-node" {
+		t.Errorf("expected gpu-node (cpu-node has no VRAM and no model), got %s", result.Target)
+	}
+}
+
 func TestHasRole(t *testing.T) {
 	tests := []struct {
 		roles []string
