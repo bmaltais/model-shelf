@@ -110,7 +110,7 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 		return
 	}
 
-	// Update inventory.
+	// Update inventory with lock to prevent concurrent Save races.
 	if result.Path != nil {
 		var size int64
 		if info, err := os.Stat(*result.Path); err == nil {
@@ -120,9 +120,15 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 				size = info.Size()
 			}
 		}
-		d.inventory.Touch(repoID, format, quant, size)
-		if err := d.inventory.Save(); err != nil {
-			log.Printf("pull: job %s inventory save error: %v", jobID, err)
+		release, lockErr := acquireInventoryLock()
+		if lockErr != nil {
+			log.Printf("pull: job %s failed to acquire inventory lock: %v", jobID, lockErr)
+		} else {
+			d.inventory.Touch(repoID, format, quant, size)
+			if err := d.inventory.Save(); err != nil {
+				log.Printf("pull: job %s inventory save error: %v", jobID, err)
+			}
+			release()
 		}
 	}
 

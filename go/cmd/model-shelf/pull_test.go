@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"testing"
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
@@ -35,15 +35,13 @@ func TestCmdPull_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Parse the server address.
-	addr := server.Listener.Addr().String()
-	parts := strings.Split(addr, ":")
-	host := parts[0]
-	if host == "" {
-		host = "127.0.0.1"
+	// Parse the server URL (handles IPv6 correctly).
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
 	}
-	var port int
-	_, _ = fmt.Sscanf(parts[len(parts)-1], "%d", &port)
+	host := u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
 
 	// Write mesh state with the target node pointing at our test server.
 	stateDir := filepath.Join(home, ".model-shelf", "state")
@@ -115,6 +113,3 @@ func TestCmdPull_Help(t *testing.T) {
 		t.Fatalf("expected exit code 0 for help, got %d", code)
 	}
 }
-
-// Needed for fmt.Sscanf
-func init() {}

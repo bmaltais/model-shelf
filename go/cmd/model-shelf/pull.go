@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -90,7 +91,7 @@ func cmdPull(args []string) int {
 		return 1
 	}
 
-	url := fmt.Sprintf("http://%s:%d/v1/pull", addr, port)
+	url := fmt.Sprintf("http://%s/v1/pull", net.JoinHostPort(addr, fmt.Sprintf("%d", port)))
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

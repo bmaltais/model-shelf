@@ -31,7 +31,7 @@ func TestHandlePull_Success(t *testing.T) {
 	d := New(cfg)
 
 	reqBody := PullRequest{
-		RepoID: "mlx-community/some-model-mlx",
+		RepoID: "not-a-valid-repo",
 		Format: "mlx",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -281,7 +281,7 @@ func TestPullEndpointAuth(t *testing.T) {
 	mux.HandleFunc("/v1/pull", d.handlePull)
 	handler := d.authMiddleware(mux)
 
-	reqBody := PullRequest{RepoID: "test/model", Format: "mlx"}
+	reqBody := PullRequest{RepoID: "not-valid", Format: "mlx"}
 	body, _ := json.Marshal(reqBody)
 
 	// Without auth header.
