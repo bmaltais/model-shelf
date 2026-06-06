@@ -99,6 +99,13 @@ model-shelf join <peer_node> [--key <mesh_key>]
 model-shelf nodes --json
 ```
 
+Returns node health including GPU capabilities:
+```json
+[{"name": "gpu-box-1", "status": "online", "roles": ["executor","store"], "gpu": {"name": "NVIDIA A100", "vram_total_gb": 80, "vram_available_gb": 72}, "disk_total_gb": 1000, "disk_free_gb": 450}]
+```
+
+Nodes without a GPU report `"gpu": null`.
+
 ### Change node roles
 
 ```bash
