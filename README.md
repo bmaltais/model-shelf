@@ -162,8 +162,31 @@ model-shelf service uninstall
 # Human-readable table with status and disk metrics
 model-shelf nodes
 
-# JSON output for scripting (includes disk_total_gb, disk_free_gb, uptime_seconds, last_seen)
+# JSON output for scripting (includes disk_total_gb, disk_free_gb, uptime_seconds, gpu, last_seen)
 model-shelf nodes --json
+```
+
+### GPU auto-detection
+
+The daemon auto-detects GPU hardware on startup:
+
+- **NVIDIA**: runs `nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits`
+- **Apple Silicon / unified memory**: detects via `sysctl` (total memory) and `vm_stat` (available)
+
+GPU info is reported in `GET /v1/health` and gossiped to all mesh peers:
+
+```json
+{"gpu": {"name": "NVIDIA A100-SXM4-80GB", "vram_total_gb": 80, "vram_available_gb": 72.5}}
+```
+
+Nodes without a GPU report `"gpu": null`.
+
+**Manual override** in `~/.model-shelf/config.toml` for edge cases (multi-GPU, misdetection):
+
+```toml
+[gpu]
+name = "NVIDIA A100-SXM4-80GB"
+vram_total_gb = 80.0
 ```
 
 ## CLI
@@ -350,11 +373,11 @@ model-shelf init --role store --shelf ~/.cache/model-shelf/models
 
 ## Status
 
-v0.14 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), and disk/uptime metrics propagation. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics for scripting.
+v0.14 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), and disk/uptime/GPU metrics propagation. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics for scripting.
 
 ### Go version
 
-The Go implementation (`go/`) provides the full CLI in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Includes mesh networking (`init`, `join`, `nodes`, `daemon`, `service`), model resolution (`resolve`, `find`, `list`), and gossip-based health propagation. Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
+The Go implementation (`go/`) provides the full CLI in a single static binary — no runtime dependencies. Cross-compiled for macOS, Linux, and Windows (amd64 + arm64). Includes mesh networking (`init`, `join`, `nodes`, `daemon`, `service`), model resolution (`resolve`, `find`, `list`), GPU auto-detection, and gossip-based health propagation. Downloads from Hugging Face use the Hub REST API directly; set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
 
 Roadmap: `verify` subcommand, quantized-safetensors variants (AWQ/GPTQ).
 
