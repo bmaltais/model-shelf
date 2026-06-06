@@ -18,13 +18,17 @@ func cmdStatus(args []string) int {
 	positional, flags := parseFlags(args)
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf status [<job_id>] [--json] [--mesh]")
+		fmt.Println("Usage: model-shelf status [<job_id>] [--json] [--mesh] [--local]")
 		fmt.Println()
 		fmt.Println("Show job status for all in-flight and recent jobs.")
+		fmt.Println()
+		fmt.Println("By default, aggregates jobs from all nodes when this node is a controller")
+		fmt.Println("or has seeds configured. Use --local to show only local jobs.")
 		fmt.Println()
 		fmt.Println("Flags:")
 		fmt.Println("  --json             Emit JSON output")
 		fmt.Println("  --mesh             Aggregate jobs from all nodes in the mesh")
+		fmt.Println("  --local            Show only local daemon jobs (override mesh default)")
 		return 0
 	}
 
@@ -72,9 +76,42 @@ func statusSingleJob(addr, jobID string, flags map[string]string) int {
 	return 0
 }
 
+// shouldDefaultMesh returns true if the node is a controller or has seeds
+// configured, meaning status should aggregate from all mesh nodes by default.
+func shouldDefaultMesh() bool {
+	if !meshconfig.Exists() {
+		return false
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		return false
+	}
+	if len(cfg.Seeds) > 0 {
+		return true
+	}
+	for _, r := range cfg.Roles {
+		if r == "controller" {
+			return true
+		}
+	}
+	return false
+}
+
 func statusAllJobs(addr string, flags map[string]string) int {
+	// Determine whether to query mesh-wide.
+	// Explicit --local forces local-only; explicit --mesh forces mesh-wide.
+	// Otherwise, default to mesh-wide if this node is a controller or has seeds.
+	useMesh := false
+	if flags["local"] == "true" {
+		useMesh = false
+	} else if flags["mesh"] == "true" {
+		useMesh = true
+	} else {
+		useMesh = shouldDefaultMesh()
+	}
+
 	url := fmt.Sprintf("http://%s/v1/jobs", addr)
-	if flags["mesh"] == "true" {
+	if useMesh {
 		url += "?mesh=true"
 	}
 	body, err := httpGet(url)

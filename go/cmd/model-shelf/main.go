@@ -81,7 +81,7 @@ Usage:
   model-shelf nodes [--json]            List mesh nodes
   model-shelf inventory [--json]        List models across all mesh nodes
   model-shelf pull <repo> --target <node> Pull a model to a target node
-  model-shelf status [<job_id>] [--json] Show job status
+  model-shelf status [<job_id>] [flags]  Show job status
   model-shelf role <set|add|remove>    Manage node roles
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
@@ -101,6 +101,8 @@ Pull flags:
 
 Status flags:
   --json             Emit JSON output
+  --mesh             Aggregate jobs from all nodes in the mesh
+  --local            Show only local daemon jobs (override mesh default)
 
 Resolve flags:
   --quant <Q>        Quantization level (required for GGUF)
@@ -142,6 +144,7 @@ var booleanFlags = map[string]bool{
 	"force":       true,
 	"help":        true,
 	"mesh":        true,
+	"local":       true,
 }
 
 // parseFlags is a minimal flag parser that handles --key value, --flag, and -h style args.

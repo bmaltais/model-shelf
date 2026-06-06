@@ -201,7 +201,10 @@ model-shelf pull "Qwen/Qwen3-14B-GGUF" --target gpu-box-1 --quant Q4_K_M
 model-shelf pull "mlx-community/Qwen3-14B-4bit" --target mac-mini
 
 # Show job status (downloads, transfers)
+# Defaults to mesh-wide on controller nodes or when seeds are configured
 model-shelf status
+model-shelf status --local           # only local daemon jobs
+model-shelf status --mesh            # force mesh-wide aggregation
 model-shelf status <job_id> --json
 
 # Manage node roles

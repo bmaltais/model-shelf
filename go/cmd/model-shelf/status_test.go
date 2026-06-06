@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -284,6 +285,139 @@ func writeMeshConfig(t *testing.T, home string, server *httptest.Server) {
 	// Since daemonAddr() always uses 127.0.0.1, and httptest uses 127.0.0.1,
 	// this works if the port matches.
 	_ = host // httptest always uses 127.0.0.1
+}
+
+func TestCmdStatus_DefaultMesh_ControllerRole(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	jobs := []daemon.Job{
+		{
+			ID:        "remote789",
+			RepoID:    "Qwen/Qwen3-0.6B-GGUF",
+			Format:    "gguf",
+			Quant:     "Q8_0",
+			Target:    "mini2",
+			Status:    daemon.JobDownloading,
+			CreatedAt: now.Add(-1 * time.Minute),
+		},
+	}
+
+	var gotMeshParam atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mesh") == "true" {
+			gotMeshParam.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	// writeMeshConfig writes roles=["controller"], so mesh should be default.
+	writeMeshConfig(t, home, server)
+
+	code := cmdStatus(nil) // no --mesh flag
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !gotMeshParam.Load() {
+		t.Fatal("expected ?mesh=true to be sent by default for controller node")
+	}
+}
+
+func TestCmdStatus_DefaultMesh_WithSeeds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	jobs := []daemon.Job{}
+
+	var gotMeshParam atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mesh") == "true" {
+			gotMeshParam.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	// Write config with seeds but store role (not controller).
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	configDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(configDir, 0o755)
+	config := fmt.Sprintf("name = \"test\"\nport = %d\nroles = [\"store\"]\nshelf_root = \"/tmp/shelf\"\nseeds = [\"peer1:8844\"]\n", port)
+	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644)
+
+	code := cmdStatus(nil)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !gotMeshParam.Load() {
+		t.Fatal("expected ?mesh=true to be sent by default when seeds are configured")
+	}
+}
+
+func TestCmdStatus_LocalFlag_OverridesDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	jobs := []daemon.Job{}
+
+	var gotMeshParam atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mesh") == "true" {
+			gotMeshParam.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	// writeMeshConfig writes roles=["controller"], so mesh would be default.
+	writeMeshConfig(t, home, server)
+
+	code := cmdStatus([]string{"--local"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if gotMeshParam.Load() {
+		t.Fatal("expected ?mesh=true NOT to be sent when --local is specified")
+	}
+}
+
+func TestCmdStatus_NoMeshDefault_StoreOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	jobs := []daemon.Job{}
+
+	var gotMeshParam atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mesh") == "true" {
+			gotMeshParam.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	// Write config with store role only, no seeds.
+	u, _ := url.Parse(server.URL)
+	port, _ := strconv.Atoi(u.Port())
+	configDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(configDir, 0o755)
+	config := fmt.Sprintf("name = \"test\"\nport = %d\nroles = [\"store\"]\nshelf_root = \"/tmp/shelf\"\n", port)
+	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644)
+
+	code := cmdStatus(nil)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if gotMeshParam.Load() {
+		t.Fatal("expected ?mesh=true NOT to be sent for store-only node without seeds")
+	}
 }
 
 func timePtr(t time.Time) *time.Time {
