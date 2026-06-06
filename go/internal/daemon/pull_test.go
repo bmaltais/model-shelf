@@ -525,3 +525,197 @@ func TestHandleJobs_LocalOnlyNoProxy(t *testing.T) {
 	}
 }
 
+func TestHandleJobs_MeshAggregation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	now := time.Now()
+
+	// Create a fake peer node that has different jobs.
+	peerJobs := []Job{
+		{
+			ID:        "peer-job-111",
+			RepoID:    "remote/model-a",
+			Format:    "mlx",
+			Target:    "peer-node",
+			Status:    JobCompleted,
+			CreatedAt: now.Add(-10 * time.Minute),
+			DoneAt:    timePtr(now.Add(-5 * time.Minute)),
+		},
+		{
+			ID:        "peer-job-222",
+			RepoID:    "remote/model-b",
+			Format:    "gguf",
+			Quant:     "Q4_K_M",
+			Target:    "peer-node",
+			Status:    JobDownloading,
+			CreatedAt: now.Add(-2 * time.Minute),
+		},
+	}
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"disk_free_gb": 100, "disk_total_gb": 500, "uptime_seconds": 3600})
+			return
+		}
+		if r.URL.Path == "/v1/jobs" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(peerJobs)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer peerServer.Close()
+
+	peerHost := peerServer.Listener.Addr().(*net.TCPAddr).IP.String()
+	peerPort := peerServer.Listener.Addr().(*net.TCPAddr).Port
+
+	// Set up local daemon with a local job.
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+	cfg := &meshconfig.Config{
+		Name:      "local-node",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Create a local job.
+	d.jobs.Create("local/model", "mlx", "", "local-node")
+
+	// Add peer node to gossip state.
+	d.gossip.AddNode(MeshNode{
+		Name:    "peer-node",
+		Address: peerHost,
+		Port:    peerPort,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	})
+
+	// Query with mesh=true should aggregate from all nodes.
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?mesh=true", nil)
+	w := httptest.NewRecorder()
+	d.handleJobs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var jobs []Job
+	if err := json.NewDecoder(w.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Should have 3 jobs: 1 local + 2 from peer.
+	if len(jobs) != 3 {
+		t.Fatalf("expected 3 aggregated jobs, got %d", len(jobs))
+	}
+
+	// Verify all job IDs are present.
+	ids := make(map[string]bool)
+	for _, j := range jobs {
+		ids[j.ID] = true
+	}
+	if !ids["peer-job-111"] {
+		t.Error("missing peer-job-111 from aggregated results")
+	}
+	if !ids["peer-job-222"] {
+		t.Error("missing peer-job-222 from aggregated results")
+	}
+}
+
+func TestHandleJobs_MeshDeduplication(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	now := time.Now()
+
+	// Peer has the same job but in a more advanced state.
+	peerJobs := []Job{
+		{
+			ID:        "shared-job-123",
+			RepoID:    "shared/model",
+			Format:    "mlx",
+			Target:    "peer-node",
+			Status:    JobCompleted,
+			CreatedAt: now.Add(-10 * time.Minute),
+			DoneAt:    timePtr(now.Add(-5 * time.Minute)),
+		},
+	}
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"disk_free_gb": 100, "disk_total_gb": 500, "uptime_seconds": 3600})
+			return
+		}
+		if r.URL.Path == "/v1/jobs" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(peerJobs)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer peerServer.Close()
+
+	peerHost := peerServer.Listener.Addr().(*net.TCPAddr).IP.String()
+	peerPort := peerServer.Listener.Addr().(*net.TCPAddr).Port
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+	cfg := &meshconfig.Config{
+		Name:      "local-node",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Create the same job locally but in queued state (less advanced).
+	d.jobs.mu.Lock()
+	d.jobs.jobs["shared-job-123"] = &Job{
+		ID:        "shared-job-123",
+		RepoID:    "shared/model",
+		Format:    "mlx",
+		Target:    "peer-node",
+		Status:    JobQueued,
+		CreatedAt: now.Add(-10 * time.Minute),
+	}
+	d.jobs.mu.Unlock()
+
+	d.gossip.AddNode(MeshNode{
+		Name:    "peer-node",
+		Address: peerHost,
+		Port:    peerPort,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?mesh=true", nil)
+	w := httptest.NewRecorder()
+	d.handleJobs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var jobs []Job
+	if err := json.NewDecoder(w.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Should have 1 job (deduplicated), with the more advanced state (completed).
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 deduplicated job, got %d", len(jobs))
+	}
+	if jobs[0].Status != JobCompleted {
+		t.Fatalf("expected most advanced state (completed), got %s", jobs[0].Status)
+	}
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
+

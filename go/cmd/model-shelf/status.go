@@ -18,12 +18,13 @@ func cmdStatus(args []string) int {
 	positional, flags := parseFlags(args)
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf status [<job_id>] [--json]")
+		fmt.Println("Usage: model-shelf status [<job_id>] [--json] [--mesh]")
 		fmt.Println()
 		fmt.Println("Show job status for all in-flight and recent jobs.")
 		fmt.Println()
 		fmt.Println("Flags:")
 		fmt.Println("  --json             Emit JSON output")
+		fmt.Println("  --mesh             Aggregate jobs from all nodes in the mesh")
 		return 0
 	}
 
@@ -73,6 +74,9 @@ func statusSingleJob(addr, jobID string, flags map[string]string) int {
 
 func statusAllJobs(addr string, flags map[string]string) int {
 	url := fmt.Sprintf("http://%s/v1/jobs", addr)
+	if flags["mesh"] == "true" {
+		url += "?mesh=true"
+	}
 	body, err := httpGet(url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

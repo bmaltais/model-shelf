@@ -187,7 +187,14 @@ func (d *Daemon) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return all jobs.
+	// Return all jobs — optionally aggregated from all mesh nodes.
+	if r.URL.Query().Get("mesh") == "true" && r.URL.Query().Get("local") != "true" {
+		allJobs := d.aggregateMeshJobs()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(allJobs)
+		return
+	}
+
 	jobs := d.jobs.All()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jobs)
@@ -233,6 +240,68 @@ func (d *Daemon) proxyJobLookup(jobID string) *Job {
 		return &job
 	}
 	return nil
+}
+
+// aggregateMeshJobs collects jobs from all mesh nodes (including local) and
+// deduplicates by job ID, keeping the most advanced state for each job.
+func (d *Daemon) aggregateMeshJobs() []Job {
+	// Start with local jobs.
+	localJobs := d.jobs.All()
+	seen := make(map[string]*Job, len(localJobs))
+	for i := range localJobs {
+		seen[localJobs[i].ID] = &localJobs[i]
+	}
+
+	// Query each peer node for their local jobs.
+	nodes := d.gossip.Nodes()
+	meshKey := d.cfg.MeshKey
+
+	for _, node := range nodes {
+		if node.Name == d.cfg.Name || node.Status == StatusOffline {
+			continue
+		}
+		hostPort := net.JoinHostPort(node.Address, fmt.Sprintf("%d", node.Port))
+		url := fmt.Sprintf("http://%s/v1/jobs?local=true", hostPort)
+		client := &http.Client{Timeout: 5 * time.Second}
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+		if meshKey != "" {
+			req.Header.Set("Authorization", "Bearer "+meshKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		var peerJobs []Job
+		if err := json.NewDecoder(resp.Body).Decode(&peerJobs); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+
+		for i := range peerJobs {
+			j := &peerJobs[i]
+			if existing, ok := seen[j.ID]; ok {
+				if shouldReplace(existing, j) {
+					seen[j.ID] = j
+				}
+			} else {
+				seen[j.ID] = j
+			}
+		}
+	}
+
+	out := make([]Job, 0, len(seen))
+	for _, j := range seen {
+		out = append(out, *j)
+	}
+	return out
 }
 
 func safeStr(s *string) string {
