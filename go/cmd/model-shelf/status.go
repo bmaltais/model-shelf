@@ -211,6 +211,9 @@ func printJobDetail(j daemon.Job) {
 }
 
 func progressStr(j daemon.Job) string {
+	if j.Status == daemon.JobAlreadyPresent {
+		return "skipped"
+	}
 	if j.BytesTotal <= 0 {
 		switch j.Status {
 		case daemon.JobCompleted:

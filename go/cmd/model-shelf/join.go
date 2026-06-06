@@ -71,12 +71,19 @@ func cmdJoin(args []string) int {
 		return 1
 	}
 
-	// Build the join request.
+	// Build the join request (include disk metrics so the controller has them
+	// immediately without waiting for the first gossip health poll — fixes #115).
+	var diskFree, diskTotal float64
+	if cfg.ShelfRoot != "" {
+		diskTotal, diskFree = daemon.DiskUsage(cfg.ShelfRoot)
+	}
 	joinReq := daemon.JoinRequest{
-		Name:    cfg.Name,
-		Address: meshconfig.GetHostname(),
-		Port:    cfg.Port,
-		Roles:   cfg.Roles,
+		Name:        cfg.Name,
+		Address:     meshconfig.GetHostname(),
+		Port:        cfg.Port,
+		Roles:       cfg.Roles,
+		DiskFreeGB:  diskFree,
+		DiskTotalGB: diskTotal,
 	}
 	body, _ := json.Marshal(joinReq)
 

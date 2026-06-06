@@ -160,3 +160,62 @@ func TestJoinEndpoint_MissingFields(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
+
+func TestJoinEndpoint_DiskMetricsAndLastSeen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{
+		Name:      "controller-node",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: t.TempDir(),
+		MeshKey:   "test-key",
+	}
+	d := New(cfg)
+
+	joinReq := JoinRequest{
+		Name:        "store-node",
+		Address:     "192.168.1.10",
+		Port:        8844,
+		Roles:       []string{"store"},
+		DiskFreeGB:  750.5,
+		DiskTotalGB: 1000.0,
+	}
+	body, _ := json.Marshal(joinReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/join", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/join", d.handleJoin)
+	handler := d.authMiddleware(mux)
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the joined node has disk metrics and last_seen populated.
+	gossipNodes := d.gossip.Nodes()
+	var storeNode *MeshNode
+	for i := range gossipNodes {
+		if gossipNodes[i].Name == "store-node" {
+			storeNode = &gossipNodes[i]
+			break
+		}
+	}
+	if storeNode == nil {
+		t.Fatal("store-node not found in gossip state")
+	}
+	if storeNode.DiskFreeGB != 750.5 {
+		t.Errorf("expected DiskFreeGB=750.5, got %f", storeNode.DiskFreeGB)
+	}
+	if storeNode.DiskTotalGB != 1000.0 {
+		t.Errorf("expected DiskTotalGB=1000.0, got %f", storeNode.DiskTotalGB)
+	}
+	if storeNode.LastSeen == nil {
+		t.Error("expected LastSeen to be set immediately after join")
+	}
+}

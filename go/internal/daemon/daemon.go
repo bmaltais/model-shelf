@@ -50,10 +50,12 @@ type NodeInfo struct {
 
 // JoinRequest is sent by a node wanting to join the mesh.
 type JoinRequest struct {
-	Name    string   `json:"name"`
-	Address string   `json:"address"`
-	Port    int      `json:"port"`
-	Roles   []string `json:"roles"`
+	Name        string   `json:"name"`
+	Address     string   `json:"address"`
+	Port        int      `json:"port"`
+	Roles       []string `json:"roles"`
+	DiskFreeGB  float64  `json:"disk_free_gb,omitempty"`
+	DiskTotalGB float64  `json:"disk_total_gb,omitempty"`
 }
 
 // JoinResponse is returned by POST /v1/join.
@@ -69,7 +71,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 		startTime: time.Now(),
 	}
 	// Register self as a node.
-	totalGB, freeGB := diskUsage(cfg.ShelfRoot)
+	totalGB, freeGB := DiskUsage(cfg.ShelfRoot)
 	now := time.Now()
 	selfNode := MeshNode{
 		Name:        cfg.Name,
@@ -156,7 +158,7 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalGB, freeGB := diskUsage(d.cfg.ShelfRoot)
+	totalGB, freeGB := DiskUsage(d.cfg.ShelfRoot)
 
 	resp := HealthResponse{
 		Name:          d.cfg.Name,
@@ -210,12 +212,16 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Register in gossip state and push join event to peers.
+	now := time.Now()
 	newNode := MeshNode{
-		Name:    req.Name,
-		Address: req.Address,
-		Port:    req.Port,
-		Roles:   req.Roles,
-		Status:  StatusOnline,
+		Name:        req.Name,
+		Address:     req.Address,
+		Port:        req.Port,
+		Roles:       req.Roles,
+		Status:      StatusOnline,
+		DiskFreeGB:  req.DiskFreeGB,
+		DiskTotalGB: req.DiskTotalGB,
+		LastSeen:    &now,
 	}
 	d.gossip.AddNode(newNode)
 
@@ -323,8 +329,9 @@ func (d *Daemon) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// diskUsage returns total and free disk space in GB for the given path.
-func diskUsage(path string) (totalGB, freeGB float64) {
+// DiskUsage returns total and free disk space in GB for the given path.
+// Exported so the CLI can include disk metrics in join requests.
+func DiskUsage(path string) (totalGB, freeGB float64) {
 	if path == "" {
 		return 0, 0
 	}
