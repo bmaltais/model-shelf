@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -114,6 +115,7 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/inventory", d.handleInventory)
 	mux.HandleFunc("/v1/pull", d.handlePull)
 	mux.HandleFunc("/v1/jobs", d.handleJobs)
+	mux.HandleFunc("/v1/models/", d.handleModelDownload)
 
 	handler := d.authMiddleware(mux)
 
@@ -340,4 +342,14 @@ func DiskUsage(path string) (totalGB, freeGB float64) {
 		return 0, 0
 	}
 	return diskUsagePlatform(path)
+}
+
+// looksLikeModelDir checks if a path is a directory containing config.json.
+func looksLikeModelDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(path, "config.json"))
+	return err == nil
 }
