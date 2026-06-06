@@ -91,11 +91,48 @@ func queryModelSize(repoID, format, quant string) (int64, error) {
 	return sizeForSnapshot(repoInfo.Siblings, format)
 }
 
+func queryContentLength(url string) (int64, error) {
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("HEAD %s returned %d", url, resp.StatusCode)
+	}
+	return resp.ContentLength, nil
+}
+
 // sizeForGGUF finds the matching GGUF file size.
 func sizeForGGUF(siblings []struct {
 	Filename string `json:"rfilename"`
 	Size     int64  `json:"size"`
 }, quant, repoID string) (int64, error) {
+	quantUpper := strings.ToUpper(quant)
+	for _, f := range siblings {
+		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
+			continue
+		}
+		// Exact quant match using the same extraction logic as inventory.
+		if ExtractQuant(f.Filename) == quantUpper {
+			if f.Size > 0 {
+				return f.Size, nil
+			}
+		}
+	}
+
+	// Fallback: search for first file that contains the quant string if no exact match.
+	// This handles cases where ExtractQuant might be too strict.
 	quantLower := strings.ToLower(quant)
 	for _, f := range siblings {
 		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
@@ -107,7 +144,28 @@ func sizeForGGUF(siblings []struct {
 			}
 		}
 	}
-	// If no size from API, fall back to HEAD request for the specific file.
+
+	// If no size from API or size is 0, fall back to HEAD request for the specific file.
+	// We need to guess the filename or find a matching sibling first.
+	var bestFile string
+	for _, f := range siblings {
+		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
+			continue
+		}
+		if ExtractQuant(f.Filename) == quantUpper || strings.Contains(strings.ToLower(f.Filename), quantLower) {
+			bestFile = f.Filename
+			break
+		}
+	}
+
+	if bestFile != "" {
+		url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, bestFile)
+		size, err := queryContentLength(url)
+		if err == nil && size > 0 {
+			return size, nil
+		}
+	}
+
 	return 0, fmt.Errorf("could not determine file size for %s (quant=%s) from HF API", repoID, quant)
 }
 
@@ -147,9 +205,9 @@ func isWeightFile(name, format string) bool {
 // Logic:
 //  1. Filter to Executor nodes with sufficient VRAM.
 //  2. Prefer nodes that already have the model.
-//  3. Prefer nodes not currently serving (future-proofing, always true for now).
+//  3. Prefer nodes not currently serving.
 //  4. Among remaining, prefer most free disk space.
-func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, quant string, inventoryByNode map[string][]InventoryEntry) (*PlacementResult, error) {
+func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, quant string, inventoryByNode map[string][]InventoryEntry, activeJobCountByNode map[string]int) (*PlacementResult, error) {
 	// Step 1: Find all Executor nodes.
 	var executors []MeshNode
 	for _, n := range nodes {
@@ -167,8 +225,9 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 
 	// Step 2: Filter by VRAM capacity.
 	var candidates []struct {
-		Node     MeshNode
-		HasModel bool
+		Node       MeshNode
+		HasModel   bool
+		NotServing bool
 	}
 	var insufficientCandidates []PlacementCandidate
 
@@ -187,10 +246,14 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 		}
 		// Check if this node already has the model.
 		hasModel := nodeHasModel(inventoryByNode[n.Name], repoID, format, quant)
+		// Check if this node is not currently serving (has no active jobs).
+		notServing := activeJobCountByNode[n.Name] == 0
+
 		candidates = append(candidates, struct {
-			Node     MeshNode
-			HasModel bool
-		}{n, hasModel})
+			Node       MeshNode
+			HasModel   bool
+			NotServing bool
+		}{n, hasModel, notServing})
 	}
 
 	if len(candidates) == 0 {
@@ -201,20 +264,41 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 	}
 
 	// Step 3: Sort by preference:
-	//   - already has model (descending)
-	//   - most free disk space (descending)
+	//   1. already has model
+	//   2. not currently serving
+	//   3. most free disk space
 	best := candidates[0]
 	for _, c := range candidates[1:] {
 		if c.HasModel && !best.HasModel {
 			best = c
-		} else if c.HasModel == best.HasModel && c.Node.DiskFreeGB > best.Node.DiskFreeGB {
+			continue
+		}
+		if !c.HasModel && best.HasModel {
+			continue
+		}
+
+		// Same HasModel status, check NotServing
+		if c.NotServing && !best.NotServing {
+			best = c
+			continue
+		}
+		if !c.NotServing && best.NotServing {
+			continue
+		}
+
+		// Same HasModel and NotServing status, check DiskFreeGB
+		if c.Node.DiskFreeGB > best.Node.DiskFreeGB {
 			best = c
 		}
 	}
 
 	reason := "most free disk space"
-	if best.HasModel {
+	if best.HasModel && best.NotServing {
+		reason = "already has model on disk and not currently serving"
+	} else if best.HasModel {
 		reason = "already has model on disk"
+	} else if best.NotServing {
+		reason = "not currently serving and most free disk space"
 	}
 
 	return &PlacementResult{

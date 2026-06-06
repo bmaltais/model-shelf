@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -10,7 +12,7 @@ func TestSelectExecutor_NoExecutors(t *testing.T) {
 	nodes := []MeshNode{
 		{Name: "store-1", Roles: []string{"store"}, Status: StatusOnline, GPU: nil},
 	}
-	_, err := SelectExecutor(nodes, 8.0, "test/model", "mlx", "", nil)
+	_, err := SelectExecutor(nodes, 8.0, "test/model", "mlx", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error when no executors available")
 	}
@@ -34,7 +36,7 @@ func TestSelectExecutor_InsufficientVRAM(t *testing.T) {
 			Name: "RTX 3080", VRAMTotalGB: 10.0, VRAMAvailableGB: 8.0,
 		}},
 	}
-	_, err := SelectExecutor(nodes, 20.0, "test/model", "mlx", "", nil)
+	_, err := SelectExecutor(nodes, 20.0, "test/model", "mlx", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error when no executor has sufficient VRAM")
 	}
@@ -63,15 +65,15 @@ func TestSelectExecutor_SelectsByVRAM(t *testing.T) {
 	}
 
 	// Both have sufficient VRAM for 10GB model — should prefer most disk space.
-	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil)
+	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Target != "exec-big" {
 		t.Errorf("expected exec-big (most disk space), got %s", result.Target)
 	}
-	if result.Reason != "most free disk space" {
-		t.Errorf("expected reason 'most free disk space', got %q", result.Reason)
+	if result.Reason != "not currently serving and most free disk space" {
+		t.Errorf("expected reason 'not currently serving and most free disk space', got %q", result.Reason)
 	}
 }
 
@@ -92,15 +94,44 @@ func TestSelectExecutor_PrefersNodeWithModel(t *testing.T) {
 		"exec-2": {{RepoID: "test/model", Format: "mlx", SizeBytes: 5000000000}},
 	}
 
-	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", inventoryByNode)
+	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", inventoryByNode, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Target != "exec-2" {
 		t.Errorf("expected exec-2 (already has model), got %s", result.Target)
 	}
-	if result.Reason != "already has model on disk" {
-		t.Errorf("expected reason 'already has model on disk', got %q", result.Reason)
+	if result.Reason != "already has model on disk and not currently serving" {
+		t.Errorf("expected reason 'already has model on disk and not currently serving', got %q", result.Reason)
+	}
+}
+
+func TestSelectExecutor_PrefersNotServing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	nodes := []MeshNode{
+		{Name: "exec-serving", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 500,
+			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
+		{Name: "exec-idle", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 100,
+			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
+	}
+
+	// exec-serving is currently busy.
+	activeJobs := map[string]int{
+		"exec-serving": 1,
+	}
+
+	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil, activeJobs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Target != "exec-idle" {
+		t.Errorf("expected exec-idle (not serving), got %s", result.Target)
+	}
+	if result.Reason != "not currently serving and most free disk space" {
+		t.Errorf("expected reason 'not currently serving and most free disk space', got %q", result.Reason)
 	}
 }
 
@@ -116,7 +147,7 @@ func TestSelectExecutor_SkipsOfflineNodes(t *testing.T) {
 			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
 	}
 
-	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil)
+	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +174,7 @@ func TestSelectExecutor_GGUFWithQuant(t *testing.T) {
 	}
 
 	// Requesting Q4_K_M — exec-1 does NOT have this quant.
-	result, err := SelectExecutor(nodes, 8.0, "Qwen/Qwen3-14B-GGUF", "gguf", "Q4_K_M", inventoryByNode)
+	result, err := SelectExecutor(nodes, 8.0, "Qwen/Qwen3-14B-GGUF", "gguf", "Q4_K_M", inventoryByNode, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +195,7 @@ func TestSelectExecutor_NoGPUTreatedAsZeroVRAM(t *testing.T) {
 			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
 	}
 
-	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil)
+	result, err := SelectExecutor(nodes, 10.0, "test/model", "mlx", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,6 +221,74 @@ func TestHasRole(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("HasRole(%v, %q) = %v, want %v", tc.roles, tc.role, got, tc.want)
 		}
+	}
+}
+
+func TestSizeForGGUF(t *testing.T) {
+	siblings := []struct {
+		Filename string `json:"rfilename"`
+		Size     int64  `json:"size"`
+	}{
+		{"Qwen3-14B-Q4_K_M.gguf", 8000000000},
+		{"Qwen3-14B-Q8_0.gguf", 15000000000},
+		{"random-file.txt", 1024},
+	}
+
+	t.Run("exact match", func(t *testing.T) {
+		size, err := sizeForGGUF(siblings, "Q4_K_M", "repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if size != 8000000000 {
+			t.Errorf("expected 8GB, got %d", size)
+		}
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		size, err := sizeForGGUF(siblings, "q4_k_m", "repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if size != 8000000000 {
+			t.Errorf("expected 8GB, got %d", size)
+		}
+	})
+
+	t.Run("substring fallback", func(t *testing.T) {
+		// Even if ExtractQuant wouldn't perfectly match, strings.Contains should.
+		size, err := sizeForGGUF(siblings, "Q8_0", "repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if size != 15000000000 {
+			t.Errorf("expected 15GB, got %d", size)
+		}
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		_, err := sizeForGGUF(siblings, "Q2_K", "repo")
+		if err == nil {
+			t.Fatal("expected error for no match")
+		}
+	})
+}
+
+func TestQueryContentLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "HEAD" {
+			t.Errorf("expected HEAD request, got %s", r.Method)
+		}
+		w.Header().Set("Content-Length", "12345")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	size, err := queryContentLength(server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if size != 12345 {
+		t.Errorf("expected 12345, got %d", size)
 	}
 }
 

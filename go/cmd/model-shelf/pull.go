@@ -265,6 +265,20 @@ func autoSelectTarget(repoID, format, quant string) (*daemon.PlacementResult, er
 		return nil, fmt.Errorf("querying mesh nodes: %v", err)
 	}
 
+	// Get mesh jobs to determine which nodes are "serving".
+	jobs, err := fetchJobs(cfg)
+	if err != nil {
+		// Log warning but proceed — better to place without "not serving" info than to fail.
+		fmt.Fprintf(os.Stderr, "warning: could not fetch mesh jobs for smart placement: %v\n", err)
+	}
+
+	activeJobCountByNode := make(map[string]int)
+	for _, j := range jobs {
+		if j.Status == daemon.JobQueued || j.Status == daemon.JobDownloading || j.Status == daemon.JobTransferring {
+			activeJobCountByNode[j.Target]++
+		}
+	}
+
 	// Estimate VRAM requirement from HF API.
 	estimatedVRAMGB, err := daemon.EstimateModelVRAM(repoID, format, quant)
 	if err != nil {
@@ -284,5 +298,34 @@ func autoSelectTarget(repoID, format, quant string) (*daemon.PlacementResult, er
 		inventoryByNode[node.Name] = entries
 	}
 
-	return daemon.SelectExecutor(nodes, estimatedVRAMGB, repoID, format, quant, inventoryByNode)
+	return daemon.SelectExecutor(nodes, estimatedVRAMGB, repoID, format, quant, inventoryByNode, activeJobCountByNode)
+}
+
+// fetchJobs queries the local daemon for the list of mesh-wide jobs.
+func fetchJobs(cfg *meshconfig.Config) ([]daemon.Job, error) {
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/jobs?mesh=true", cfg.Port)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.MeshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned HTTP %d", resp.StatusCode)
+	}
+
+	var jobs []daemon.Job
+	if err := json.NewDecoder(resp.Body).Decode(&jobs); err != nil {
+		return nil, err
+	}
+	return jobs, nil
 }
