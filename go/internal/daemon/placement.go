@@ -23,7 +23,7 @@ type PlacementError struct {
 
 func (e *PlacementError) Error() string {
 	if len(e.Candidates) == 0 {
-		return fmt.Sprintf("no Executor nodes available in the mesh")
+		return "no Executor nodes available in the mesh"
 	}
 	var lines []string
 	lines = append(lines, fmt.Sprintf("no Executor has sufficient VRAM (need %.1f GB)", e.EstimatedVRAMGB))
@@ -53,6 +53,14 @@ func EstimateModelVRAM(repoID, format, quant string) (float64, error) {
 	return estimatedBytes / (1024 * 1024 * 1024), nil // Convert to GB.
 }
 
+func addHFAuth(req *http.Request) {
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
 // queryModelSize queries the HF API for the relevant file sizes without downloading.
 func queryModelSize(repoID, format, quant string) (int64, error) {
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
@@ -60,11 +68,7 @@ func queryModelSize(repoID, format, quant string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("creating HF API request: %w", err)
 	}
-	if token := os.Getenv("HF_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	addHFAuth(req)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -96,11 +100,7 @@ func queryContentLength(url string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if token := os.Getenv("HF_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	addHFAuth(req)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
