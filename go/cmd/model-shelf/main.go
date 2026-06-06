@@ -48,6 +48,8 @@ func main() {
 		os.Exit(cmdInventory(os.Args[2:]))
 	case "pull":
 		os.Exit(cmdPull(os.Args[2:]))
+	case "status":
+		os.Exit(cmdStatus(os.Args[2:]))
 	case "role":
 		os.Exit(cmdRole(os.Args[2:]))
 	case "service":
@@ -78,6 +80,7 @@ Usage:
   model-shelf nodes [--json]            List mesh nodes
   model-shelf inventory [--json]        List models across all mesh nodes
   model-shelf pull <repo> --target <node> Pull a model to a target node
+  model-shelf status [<job_id>] [--json] Show job status
   model-shelf role <set|add|remove>    Manage node roles
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
@@ -90,6 +93,9 @@ Pull flags:
   --target <node>    Target node name (required)
   --quant <Q>        Quantization level (required for GGUF)
   --format <F>       Force format: gguf, mlx, safetensors
+  --json             Emit JSON output
+
+Status flags:
   --json             Emit JSON output
 
 Resolve flags:

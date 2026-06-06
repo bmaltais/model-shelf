@@ -239,7 +239,7 @@ func TestGossipStatePersistence(t *testing.T) {
 		Status:  StatusOnline,
 	}
 
-	g := NewGossip(selfNode, "key123", "", time.Now())
+	g := NewGossip(selfNode, "key123", "", time.Now(), nil)
 
 	// Add a peer node.
 	g.ApplyEvent(Event{
@@ -264,7 +264,7 @@ func TestGossipStatePersistence(t *testing.T) {
 	}
 
 	// Create a new gossip instance — it should load persisted state.
-	g2 := NewGossip(selfNode, "key123", "", time.Now())
+	g2 := NewGossip(selfNode, "key123", "", time.Now(), nil)
 	nodes := g2.Nodes()
 	if len(nodes) != 2 {
 		t.Fatalf("expected 2 nodes after reload, got %d", len(nodes))
@@ -282,7 +282,7 @@ func TestGossipNodeOfflineAfterMissedPolls(t *testing.T) {
 		Status:  StatusOnline,
 	}
 
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 
 	// Start a mock server that always returns 503 (unhealthy).
 	unhealthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -358,7 +358,7 @@ func TestGossipNodeComesBackOnline(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 
 	// Add peer as offline.
 	g.mu.Lock()
@@ -442,7 +442,7 @@ func TestAddNode_EvictsOldNodeWithSameAddress(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 
 	// Start a local server to absorb async gossip pushes (avoids 5s timeout on 10.x.x.x).
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -510,7 +510,7 @@ func TestApplyEvent_EvictsOldNodeWithSameAddress(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 
 	// Existing node "ocilab1" at 10.0.0.2:8844.
 	g.ApplyEvent(Event{
@@ -557,7 +557,7 @@ func TestNewGossip_DeduplicatesPersistedState(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 	nodes := g.Nodes()
 
 	// Should have: controller, newname (last entry for 10.0.0.2), other = 3 nodes.
@@ -585,7 +585,7 @@ func TestSetNodes_DeduplicatesByAddress(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 
 	// SetNodes with duplicate address entries.
 	g.SetNodes([]MeshNode{
@@ -633,7 +633,7 @@ func TestPollPeers_UpdatesDiskFreeGB(t *testing.T) {
 		Roles:   []string{"controller"},
 		Status:  StatusOnline,
 	}
-	g := NewGossip(selfNode, "", "", time.Now())
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
 
 	// Add peer as online with no disk info.
 	g.ApplyEvent(Event{

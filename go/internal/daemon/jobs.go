@@ -7,30 +7,36 @@ import (
 	"time"
 )
 
-// JobStatus describes the state of a pull job.
+// JobStatus describes the state of a job.
 type JobStatus string
 
 const (
-	JobQueued  JobStatus = "queued"
-	JobRunning JobStatus = "running"
-	JobDone    JobStatus = "done"
-	JobFailed  JobStatus = "failed"
+	JobQueued       JobStatus = "queued"
+	JobDownloading  JobStatus = "downloading"
+	JobTransferring JobStatus = "transferring"
+	JobCompleted    JobStatus = "completed"
+	JobFailed       JobStatus = "failed"
 )
 
-// Job tracks an async pull operation.
+// retentionPeriod is how long completed/failed jobs are kept before pruning.
+const retentionPeriod = 24 * time.Hour
+
+// Job tracks an async pull or transfer operation.
 type Job struct {
-	ID        string    `json:"job_id"`
-	RepoID    string    `json:"repo_id"`
-	Format    string    `json:"format"`
-	Quant     string    `json:"quant,omitempty"`
-	Target    string    `json:"target"`
-	Status    JobStatus `json:"status"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	DoneAt    *time.Time `json:"done_at,omitempty"`
+	ID              string     `json:"job_id"`
+	RepoID          string     `json:"repo_id"`
+	Format          string     `json:"format"`
+	Quant           string     `json:"quant,omitempty"`
+	Target          string     `json:"target"`
+	Status          JobStatus  `json:"status"`
+	BytesDownloaded int64      `json:"bytes_downloaded"`
+	BytesTotal      int64      `json:"bytes_total"`
+	Error           string     `json:"error,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	DoneAt          *time.Time `json:"done_at,omitempty"`
 }
 
-// JobStore manages pull jobs in memory.
+// JobStore manages pull/transfer jobs in memory.
 type JobStore struct {
 	mu   sync.RWMutex
 	jobs map[string]*Job
@@ -74,21 +80,40 @@ func (s *JobStore) Get(id string) *Job {
 	return &copy
 }
 
-// SetRunning marks a job as running.
-func (s *JobStore) SetRunning(id string) {
+// SetDownloading marks a job as downloading.
+func (s *JobStore) SetDownloading(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
-		j.Status = JobRunning
+		j.Status = JobDownloading
 	}
 }
 
-// SetDone marks a job as completed successfully.
-func (s *JobStore) SetDone(id string) {
+// SetTransferring marks a job as transferring.
+func (s *JobStore) SetTransferring(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
-		j.Status = JobDone
+		j.Status = JobTransferring
+	}
+}
+
+// SetProgress updates the bytes downloaded and total for a job.
+func (s *JobStore) SetProgress(id string, downloaded, total int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j, ok := s.jobs[id]; ok {
+		j.BytesDownloaded = downloaded
+		j.BytesTotal = total
+	}
+}
+
+// SetCompleted marks a job as completed successfully.
+func (s *JobStore) SetCompleted(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j, ok := s.jobs[id]; ok {
+		j.Status = JobCompleted
 		now := time.Now()
 		j.DoneAt = &now
 	}
@@ -106,8 +131,12 @@ func (s *JobStore) SetFailed(id string, errMsg string) {
 	}
 }
 
-// All returns all jobs.
+// All returns all jobs, pruning expired ones first.
 func (s *JobStore) All() []Job {
+	s.mu.Lock()
+	s.pruneLocked()
+	s.mu.Unlock()
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Job, 0, len(s.jobs))
@@ -115,6 +144,40 @@ func (s *JobStore) All() []Job {
 		out = append(out, *j)
 	}
 	return out
+}
+
+// Merge adds remote jobs to the store (for gossip replication).
+// Only adds jobs that don't already exist locally.
+func (s *JobStore) Merge(jobs []Job) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range jobs {
+		if _, exists := s.jobs[jobs[i].ID]; !exists {
+			j := jobs[i]
+			s.jobs[j.ID] = &j
+		} else {
+			// Update existing job if the remote version is newer.
+			existing := s.jobs[jobs[i].ID]
+			if jobs[i].DoneAt != nil && existing.DoneAt == nil {
+				j := jobs[i]
+				s.jobs[j.ID] = &j
+			} else if jobs[i].BytesDownloaded > existing.BytesDownloaded {
+				j := jobs[i]
+				s.jobs[j.ID] = &j
+			}
+		}
+	}
+}
+
+// pruneLocked removes completed/failed jobs older than retentionPeriod.
+// Must be called with mu held for writing.
+func (s *JobStore) pruneLocked() {
+	cutoff := time.Now().Add(-retentionPeriod)
+	for id, j := range s.jobs {
+		if j.DoneAt != nil && j.DoneAt.Before(cutoff) {
+			delete(s.jobs, id)
+		}
+	}
 }
 
 func generateJobID() string {

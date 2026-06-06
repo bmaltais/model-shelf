@@ -75,21 +75,22 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 
 	// Create job and start background download.
 	job := d.jobs.Create(req.RepoID, format, req.Quant, d.cfg.Name)
+	jobID := job.ID
 
-	go d.executePull(job.ID, req.RepoID, format, req.Quant)
+	go d.executePull(jobID, req.RepoID, format, req.Quant)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(PullResponse{
-		JobID:  job.ID,
-		Status: job.Status,
+		JobID:  jobID,
+		Status: JobQueued,
 		Target: d.cfg.Name,
 	})
 }
 
 // executePull runs the download in the background.
 func (d *Daemon) executePull(jobID, repoID, format, quant string) {
-	d.jobs.SetRunning(jobID)
+	d.jobs.SetDownloading(jobID)
 	log.Printf("pull: starting download of %s (format=%s, quant=%s) job=%s", repoID, format, quant, jobID)
 
 	cfg := &resolver.Config{
@@ -132,7 +133,20 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 		}
 	}
 
-	d.jobs.SetDone(jobID)
+	// Update progress with final size.
+	if result.Path != nil {
+		if info, statErr := os.Stat(*result.Path); statErr == nil {
+			var sz int64
+			if info.IsDir() {
+				sz = dirSizeBytes(*result.Path)
+			} else {
+				sz = info.Size()
+			}
+			d.jobs.SetProgress(jobID, sz, sz)
+		}
+	}
+
+	d.jobs.SetCompleted(jobID)
 	log.Printf("pull: job %s completed — %s at %s", jobID, repoID, safeStr(result.Path))
 }
 
