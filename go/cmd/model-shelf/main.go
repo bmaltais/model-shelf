@@ -138,6 +138,7 @@ var booleanFlags = map[string]bool{
 	"no-download": true,
 	"force":       true,
 	"help":        true,
+	"mesh":        true,
 }
 
 // parseFlags is a minimal flag parser that handles --key value, --flag, and -h style args.

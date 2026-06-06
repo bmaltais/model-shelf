@@ -171,6 +171,75 @@ func TestCmdStatus_Help(t *testing.T) {
 	}
 }
 
+func TestCmdStatus_MeshFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	localJobs := []daemon.Job{
+		{
+			ID:        "local123",
+			RepoID:    "mlx-community/Qwen3-14B-mlx",
+			Format:    "mlx",
+			Target:    "ocilab1",
+			Status:    daemon.JobDownloading,
+			CreatedAt: now.Add(-5 * time.Minute),
+		},
+	}
+
+	var gotMeshParam bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mesh") == "true" {
+			gotMeshParam = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(localJobs)
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	code := cmdStatus([]string{"--mesh"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !gotMeshParam {
+		t.Fatal("expected ?mesh=true query parameter to be sent to daemon")
+	}
+}
+
+func TestCmdStatus_MeshFlag_JSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	jobs := []daemon.Job{
+		{
+			ID:        "remote456",
+			RepoID:    "Qwen/Qwen3-14B-GGUF",
+			Format:    "gguf",
+			Quant:     "Q4_K_M",
+			Target:    "mini2",
+			Status:    daemon.JobCompleted,
+			CreatedAt: now.Add(-1 * time.Hour),
+			DoneAt:    timePtr(now.Add(-30 * time.Minute)),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	code := cmdStatus([]string{"--mesh", "--json"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+}
+
 func TestCmdStatus_DaemonUnreachable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
