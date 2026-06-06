@@ -304,6 +304,11 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 		reason = "not currently serving and most free disk space"
 	}
 
+	// Annotate reason when the selected node has no GPU (CPU inference).
+	if best.Node.GPU == nil {
+		reason += " (CPU inference — no GPU)"
+	}
+
 	return &PlacementResult{
 		Target: best.Node.Name,
 		Reason: reason,
