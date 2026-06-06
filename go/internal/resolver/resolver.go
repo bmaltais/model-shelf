@@ -769,17 +769,22 @@ func clarify401(fileURL string) error {
 	if err != nil {
 		return fmt.Errorf("HTTP 401 for %s", fileURL)
 	}
-	// Include HF_TOKEN in probe if available — improves disambiguation.
+	// Include auth token in probe if available — improves disambiguation.
+	// Support both HF_TOKEN and HUGGING_FACE_HUB_TOKEN (common with HF tooling).
+	var hfTokenSet bool
 	if token := os.Getenv("HF_TOKEN"); token != "" {
 		headReq.Header.Set("Authorization", "Bearer "+token)
+		hfTokenSet = true
+	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
+		headReq.Header.Set("Authorization", "Bearer "+token)
+		hfTokenSet = true
 	}
-	headResp, err := http.DefaultClient.Do(headReq)
+	probeClient := &http.Client{Timeout: 10 * time.Second}
+	headResp, err := probeClient.Do(headReq)
 	if err != nil {
 		return fmt.Errorf("HTTP 401 for %s", fileURL)
 	}
 	headResp.Body.Close()
-
-	hfTokenSet := os.Getenv("HF_TOKEN") != ""
 
 	switch headResp.StatusCode {
 	case 404:
