@@ -105,7 +105,7 @@ func fetchNodes(cfg *meshconfig.Config) ([]daemon.MeshNode, error) {
 
 // aggregateInventory queries each node's /v1/inventory and builds a combined list.
 func aggregateInventory(nodes []daemon.MeshNode, cfg *meshconfig.Config) []InventoryRow {
-	var rows []InventoryRow
+	rows := []InventoryRow{}
 
 	for _, node := range nodes {
 		entries, stale := fetchNodeInventory(node, cfg)

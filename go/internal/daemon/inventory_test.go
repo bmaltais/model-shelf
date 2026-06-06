@@ -267,9 +267,9 @@ func TestExtractQuant(t *testing.T) {
 		{"Qwen-14B-Q4_K_M.gguf", "Q4_K_M"},
 	}
 	for _, tc := range tests {
-		got := extractQuant(tc.filename)
+		got := ExtractQuant(tc.filename)
 		if got != tc.want {
-			t.Errorf("extractQuant(%q) = %q, want %q", tc.filename, got, tc.want)
+			t.Errorf("ExtractQuant(%q) = %q, want %q", tc.filename, got, tc.want)
 		}
 	}
 }
