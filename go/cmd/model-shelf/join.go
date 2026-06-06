@@ -45,10 +45,17 @@ func cmdJoin(args []string) int {
 		meshKey = os.Getenv("MODEL_SHELF_MESH_KEY")
 	}
 	if meshKey == "" {
-		meshKey = promptMeshKey()
+		interactive := term.IsTerminal(int(os.Stdin.Fd()))
+		if interactive {
+			meshKey = promptMeshKey()
+		}
 		if meshKey == "" {
 			fmt.Fprintf(os.Stderr, "error: mesh key is required\n")
-			fmt.Fprintf(os.Stderr, "hint: use --key <mesh-key> or set MODEL_SHELF_MESH_KEY in non-interactive mode\n")
+			if interactive {
+				fmt.Fprintf(os.Stderr, "hint: use --key <mesh-key> or set MODEL_SHELF_MESH_KEY\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "hint: use --key <mesh-key> or set MODEL_SHELF_MESH_KEY in non-interactive mode\n")
+			}
 			return 1
 		}
 	}
