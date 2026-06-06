@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -414,6 +415,113 @@ func TestJobStore_Transferring(t *testing.T) {
 	got := store.Get(job.ID)
 	if got.Status != JobTransferring {
 		t.Fatalf("expected transferring, got %s", got.Status)
+	}
+}
+
+func TestHandleJobs_ProxyToPeer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Create a fake peer node that has the job.
+	targetJob := Job{
+		ID:        "peer-job-abc123",
+		RepoID:    "Qwen/Qwen3-0.6B-GGUF",
+		Format:    "gguf",
+		Quant:     "Q8_0",
+		Target:    "peer-node",
+		Status:    JobDownloading,
+		CreatedAt: time.Now(),
+	}
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"disk_free_gb": 100, "disk_total_gb": 500, "uptime_seconds": 3600})
+			return
+		}
+		if r.URL.Path == "/v1/jobs" && r.URL.Query().Get("id") == "peer-job-abc123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(targetJob)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "job not found"})
+	}))
+	defer peerServer.Close()
+
+	// Parse the peer server address.
+	peerHost := peerServer.Listener.Addr().(*net.TCPAddr).IP.String()
+	peerPort := peerServer.Listener.Addr().(*net.TCPAddr).Port
+
+	// Set up the local daemon with the peer in its gossip state.
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+	cfg := &meshconfig.Config{
+		Name:      "local-node",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Add peer node to gossip state.
+	d.gossip.AddNode(MeshNode{
+		Name:    "peer-node",
+		Address: peerHost,
+		Port:    peerPort,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	})
+
+	// Query for the job that only exists on the peer.
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?id=peer-job-abc123", nil)
+	w := httptest.NewRecorder()
+	d.handleJobs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (proxy found job), got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp Job
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID != "peer-job-abc123" {
+		t.Fatalf("expected job id 'peer-job-abc123', got %q", resp.ID)
+	}
+	if resp.Status != JobDownloading {
+		t.Fatalf("expected status downloading, got %s", resp.Status)
+	}
+
+	// The job should now be merged into the local store.
+	local := d.jobs.Get("peer-job-abc123")
+	if local == nil {
+		t.Fatal("expected job to be merged into local store after proxy")
+	}
+}
+
+func TestHandleJobs_LocalOnlyNoProxy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+	cfg := &meshconfig.Config{
+		Name:      "local-node",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Query with local=true should NOT proxy, just return 404.
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs?id=nonexistent&local=true", nil)
+	w := httptest.NewRecorder()
+	d.handleJobs(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 with local=true, got %d", w.Code)
 	}
 }
 

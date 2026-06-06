@@ -520,7 +520,6 @@ func resolveGGUF(cfg *Config, repoID, quant string) (*ResolveResult, error) {
 	}
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, hfName)
 	if err := downloadFile(url, finalPath); err != nil {
-		os.Remove(finalPath) // remove partial/corrupt file
 		cleanupOnFailure(dir, dirExisted)
 		return nil, fmt.Errorf("download failed: %w", err)
 	}
@@ -666,6 +665,10 @@ func matchesAllowPatterns(filename, format string) bool {
 	return false
 }
 
+// PartialSuffix is appended to files during download. Files with this suffix
+// are incomplete and should be excluded from listings and inventory scans.
+const PartialSuffix = ".partial"
+
 func downloadFile(url, dest string) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -690,13 +693,29 @@ func downloadFile(url, dest string) error {
 		return fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
 	}
 
-	out, err := os.Create(dest)
+	// Write to a .partial file first, then atomically rename on success.
+	// This prevents partial files from appearing as complete in list/inventory.
+	partial := dest + PartialSuffix
+	out, err := os.Create(partial)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, resp.Body)
-	return err
+	_, copyErr := io.Copy(out, resp.Body)
+	closeErr := out.Close()
+	if copyErr != nil {
+		os.Remove(partial)
+		return copyErr
+	}
+	if closeErr != nil {
+		os.Remove(partial)
+		return closeErr
+	}
+	// Atomic rename — makes the file visible only when fully written.
+	if err := os.Rename(partial, dest); err != nil {
+		os.Remove(partial)
+		return err
+	}
+	return nil
 }
 
 // clarify401 distinguishes "repo not found" from "repo requires authentication"

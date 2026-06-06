@@ -290,3 +290,31 @@ func TestLooksLikeQuant_RejectsNonQuant(t *testing.T) {
 		t.Error("looksLikeQuant(\"IQ4_XS\") should be true")
 	}
 }
+
+func TestInventory_ScanSkipsPartialFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelf := t.TempDir()
+	ggufDir := filepath.Join(shelf, "gguf", "Qwen", "Qwen3-0.6B-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	// Complete file.
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-0.6B-Q8_0.gguf"), make([]byte, 100), 0o644)
+	// Partial file (in-progress download) — should be excluded.
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-0.6B-Q4_K_M.gguf.partial"), make([]byte, 50), 0o644)
+
+	os.MkdirAll(filepath.Join(shelf, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelf, "safetensors"), 0o755)
+
+	inv := NewInventory()
+	if err := inv.ScanShelf(shelf); err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	entries := inv.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (partial excluded), got %d", len(entries))
+	}
+	if entries[0].Quant != "Q8_0" {
+		t.Errorf("expected Q8_0 entry, got %q", entries[0].Quant)
+	}
+}

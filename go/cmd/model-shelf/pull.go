@@ -105,7 +105,12 @@ func cmdPull(args []string) int {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot reach target node %q: %v\n", target, err)
+		hint := pullConnectionHint(err, target, addr, port)
+		fmt.Fprintf(os.Stderr, "error: pull failed — cannot reach target %q (%s)\n", target, net.JoinHostPort(addr, fmt.Sprintf("%d", port)))
+		fmt.Fprintf(os.Stderr, "  %v\n", err)
+		if hint != "" {
+			fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
+		}
 		return 1
 	}
 	defer resp.Body.Close()
@@ -117,11 +122,15 @@ func cmdPull(args []string) int {
 	}
 
 	if resp.StatusCode != http.StatusAccepted {
+		endpoint := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
 		var errResp map[string]string
 		if json.Unmarshal(respBody, &errResp) == nil && errResp["error"] != "" {
-			fmt.Fprintf(os.Stderr, "error: %s\n", errResp["error"])
+			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned: %s\n", target, endpoint, errResp["error"])
 		} else {
-			fmt.Fprintf(os.Stderr, "error: target returned HTTP %d\n", resp.StatusCode)
+			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned HTTP %d for POST /v1/pull\n", target, endpoint, resp.StatusCode)
+		}
+		if hint := pullStatusHint(resp.StatusCode); hint != "" {
+			fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
 		}
 		return 1
 	}
@@ -184,4 +193,35 @@ func loadMeshKey() string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// pullConnectionHint returns a human-readable hint for connection errors.
+func pullConnectionHint(err error, target, addr string, port int) string {
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "connection refused"):
+		return fmt.Sprintf("is the daemon running on %s? check 'model-shelf service status' on %s", target, target)
+	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded"):
+		return fmt.Sprintf("target %s may be unreachable or overloaded", target)
+	case strings.Contains(errStr, "no such host") || strings.Contains(errStr, "no route"):
+		return fmt.Sprintf("cannot resolve hostname for %s — check network connectivity", target)
+	default:
+		return ""
+	}
+}
+
+// pullStatusHint returns a hint based on HTTP status code from the target.
+func pullStatusHint(statusCode int) string {
+	switch statusCode {
+	case http.StatusNotFound:
+		return "ensure the target node is running model-shelf v0.14+ with the pull endpoint"
+	case http.StatusUnauthorized:
+		return "mesh key mismatch — re-join with the correct key"
+	case http.StatusForbidden:
+		return "mesh key mismatch — re-join with the correct key"
+	case http.StatusServiceUnavailable, http.StatusBadGateway:
+		return "target node's daemon may be starting up or overloaded"
+	default:
+		return ""
+	}
 }

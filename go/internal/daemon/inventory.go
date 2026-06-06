@@ -225,6 +225,10 @@ func scanGGUF(formatDir string, onDisk map[string]*InventoryEntry) error {
 				if f.IsDir() || !strings.HasSuffix(strings.ToLower(f.Name()), ".gguf") {
 					continue
 				}
+				// Skip in-progress downloads (.partial files).
+				if strings.HasSuffix(f.Name(), resolver.PartialSuffix) {
+					continue
+				}
 				info, err := f.Info()
 				if err != nil {
 					continue
