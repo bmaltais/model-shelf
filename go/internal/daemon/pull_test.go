@@ -357,11 +357,10 @@ func TestJobStore_Pruning(t *testing.T) {
 func TestJobStore_Merge(t *testing.T) {
 	store := NewJobStore()
 
-	// Create a local job.
+	// Create a local job in queued state.
 	local := store.Create("local/model", "mlx", "", "node-1")
-	store.SetDownloading(local.ID)
 
-	// Merge remote jobs.
+	// Merge remote jobs — one new, one update to the local job (status advance).
 	now := time.Now()
 	remoteJobs := []Job{
 		{
@@ -373,6 +372,14 @@ func TestJobStore_Merge(t *testing.T) {
 			Status:    JobCompleted,
 			CreatedAt: now,
 			DoneAt:    &now,
+		},
+		{
+			ID:        local.ID,
+			RepoID:    "local/model",
+			Format:    "mlx",
+			Target:    "node-1",
+			Status:    JobDownloading,
+			CreatedAt: local.CreatedAt,
 		},
 	}
 	store.Merge(remoteJobs)
@@ -389,6 +396,12 @@ func TestJobStore_Merge(t *testing.T) {
 	}
 	if remote.Status != JobCompleted {
 		t.Fatalf("expected completed, got %s", remote.Status)
+	}
+
+	// Verify local job was advanced to downloading.
+	updated := store.Get(local.ID)
+	if updated.Status != JobDownloading {
+		t.Fatalf("expected status advanced to downloading, got %s", updated.Status)
 	}
 }
 

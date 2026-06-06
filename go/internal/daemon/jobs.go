@@ -156,17 +156,41 @@ func (s *JobStore) Merge(jobs []Job) {
 			j := jobs[i]
 			s.jobs[j.ID] = &j
 		} else {
-			// Update existing job if the remote version is newer.
+			// Update existing job if the remote version is more advanced.
 			existing := s.jobs[jobs[i].ID]
-			if jobs[i].DoneAt != nil && existing.DoneAt == nil {
-				j := jobs[i]
-				s.jobs[j.ID] = &j
-			} else if jobs[i].BytesDownloaded > existing.BytesDownloaded {
+			if shouldReplace(existing, &jobs[i]) {
 				j := jobs[i]
 				s.jobs[j.ID] = &j
 			}
 		}
 	}
+}
+
+// jobStateOrder returns a numeric rank for each status to compare progression.
+func jobStateOrder(s JobStatus) int {
+	switch s {
+	case JobQueued:
+		return 0
+	case JobDownloading, JobTransferring:
+		return 1
+	case JobCompleted, JobFailed:
+		return 2
+	default:
+		return -1
+	}
+}
+
+// shouldReplace returns true if the remote job represents a more advanced state.
+func shouldReplace(existing, remote *Job) bool {
+	remoteOrder := jobStateOrder(remote.Status)
+	existingOrder := jobStateOrder(existing.Status)
+	if remoteOrder > existingOrder {
+		return true
+	}
+	if remoteOrder == existingOrder && remote.BytesDownloaded > existing.BytesDownloaded {
+		return true
+	}
+	return false
 }
 
 // pruneLocked removes completed/failed jobs older than retentionPeriod.

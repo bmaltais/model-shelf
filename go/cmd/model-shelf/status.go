@@ -97,12 +97,16 @@ func statusAllJobs(addr string, flags map[string]string) int {
 		return 0
 	}
 
-	// Sort: active jobs first (by created_at), then completed/failed (by done_at desc).
+	// Sort: active jobs first (by created_at desc), then completed/failed (by done_at desc).
 	sort.Slice(jobs, func(i, j int) bool {
 		iActive := jobs[i].Status == daemon.JobQueued || jobs[i].Status == daemon.JobDownloading || jobs[i].Status == daemon.JobTransferring
 		jActive := jobs[j].Status == daemon.JobQueued || jobs[j].Status == daemon.JobDownloading || jobs[j].Status == daemon.JobTransferring
 		if iActive != jActive {
 			return iActive
+		}
+		// For completed/failed jobs, sort by done_at descending.
+		if !iActive && jobs[i].DoneAt != nil && jobs[j].DoneAt != nil {
+			return jobs[i].DoneAt.After(*jobs[j].DoneAt)
 		}
 		return jobs[i].CreatedAt.After(jobs[j].CreatedAt)
 	})
