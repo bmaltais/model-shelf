@@ -201,8 +201,19 @@ func shouldReplace(existing, remote *Job) bool {
 	if remoteOrder > existingOrder {
 		return true
 	}
-	if remoteOrder == existingOrder && remote.BytesDownloaded > existing.BytesDownloaded {
-		return true
+	if remoteOrder == existingOrder {
+		// For terminal states, prefer the newer DoneAt (avoids completed
+		// overwriting already_present due to bytes tiebreaker).
+		if remoteOrder == 2 {
+			if remote.DoneAt != nil && existing.DoneAt != nil {
+				return remote.DoneAt.After(*existing.DoneAt)
+			}
+			return remote.DoneAt != nil && existing.DoneAt == nil
+		}
+		// For in-progress states, prefer higher byte count (more progress).
+		if remote.BytesDownloaded > existing.BytesDownloaded {
+			return true
+		}
 	}
 	return false
 }

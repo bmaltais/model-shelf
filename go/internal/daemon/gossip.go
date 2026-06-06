@@ -122,7 +122,7 @@ func (g *Gossip) Nodes() []MeshNode {
 		g.mu.Lock()
 		for i := range g.nodes {
 			if g.nodes[i].Name == g.self {
-				// Only update disk metrics if diskUsage returned valid data;
+				// Only update disk metrics if DiskUsage returned valid data;
 				// avoids overwriting known values with zeros on transient failures.
 				if totalGB > 0 {
 					g.nodes[i].DiskFreeGB = freeGB

@@ -50,12 +50,12 @@ type NodeInfo struct {
 
 // JoinRequest is sent by a node wanting to join the mesh.
 type JoinRequest struct {
-	Name        string  `json:"name"`
-	Address     string  `json:"address"`
-	Port        int     `json:"port"`
+	Name        string   `json:"name"`
+	Address     string   `json:"address"`
+	Port        int      `json:"port"`
 	Roles       []string `json:"roles"`
-	DiskFreeGB  float64 `json:"disk_free_gb,omitempty"`
-	DiskTotalGB float64 `json:"disk_total_gb,omitempty"`
+	DiskFreeGB  float64  `json:"disk_free_gb,omitempty"`
+	DiskTotalGB float64  `json:"disk_total_gb,omitempty"`
 }
 
 // JoinResponse is returned by POST /v1/join.

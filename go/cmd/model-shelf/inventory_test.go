@@ -245,22 +245,33 @@ func TestCmdInventory_OfflineNode(t *testing.T) {
 		t.Fatalf("WriteTo failed: %v", err)
 	}
 
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	// Capture both stdout and stderr.
+	oldOut := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	oldErr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
 
 	code := cmdInventory([]string{"--json"})
 
-	w.Close()
-	os.Stdout = old
+	wOut.Close()
+	os.Stdout = oldOut
+	wErr.Close()
+	os.Stderr = oldErr
 
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
 
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	output := buf.String()
+	var bufOut bytes.Buffer
+	bufOut.ReadFrom(rOut)
+	output := bufOut.String()
+
+	var bufErr bytes.Buffer
+	bufErr.ReadFrom(rErr)
+	stderrOutput := bufErr.String()
 
 	var got []InventoryRow
 	if err := json.Unmarshal([]byte(output), &got); err != nil {
@@ -275,6 +286,11 @@ func TestCmdInventory_OfflineNode(t *testing.T) {
 	}
 	if got[0].Stale {
 		t.Errorf("expected stale=false for online node")
+	}
+
+	// Verify warning was emitted on stderr.
+	if !strings.Contains(stderrOutput, "warning: offline-node unreachable") {
+		t.Errorf("expected warning about offline-node on stderr, got: %q", stderrOutput)
 	}
 }
 
