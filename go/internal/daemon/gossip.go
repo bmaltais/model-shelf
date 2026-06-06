@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
 
 const (
@@ -67,14 +69,15 @@ type Event struct {
 
 // Gossip manages mesh state replication.
 type Gossip struct {
-	mu        sync.RWMutex
-	nodes     []MeshNode
-	self      string // this node's name
-	shelfRoot string // for self disk usage updates
-	meshKey   string
-	startTime time.Time // daemon start time for uptime calculation
-	jobs      *JobStore // shared job store for gossip replication
-	cancel    context.CancelFunc
+	mu         sync.RWMutex
+	nodes      []MeshNode
+	self       string // this node's name
+	shelfRoot  string // for self disk usage updates
+	meshKey    string
+	startTime  time.Time              // daemon start time for uptime calculation
+	jobs       *JobStore              // shared job store for gossip replication
+	gpuConfig  *meshconfig.GPUConfig  // GPU override config for self-refresh
+	cancel     context.CancelFunc
 }
 
 // NewGossip creates a gossip instance, loading persisted state if available.
@@ -114,9 +117,16 @@ func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime ti
 	return g
 }
 
+// SetGPUConfig sets the GPU override config for self-node refresh.
+func (g *Gossip) SetGPUConfig(cfg *meshconfig.GPUConfig) {
+	g.mu.Lock()
+	g.gpuConfig = cfg
+	g.mu.Unlock()
+}
+
 // Nodes returns a copy of the current mesh state with fresh self-node metrics.
 func (g *Gossip) Nodes() []MeshNode {
-	// Refresh self-node metrics so callers always get current disk/uptime.
+	// Refresh self-node metrics so callers always get current disk/uptime/GPU.
 	if g.shelfRoot != "" {
 		totalGB, freeGB := DiskUsage(g.shelfRoot)
 		now := time.Now()
@@ -130,6 +140,7 @@ func (g *Gossip) Nodes() []MeshNode {
 					g.nodes[i].DiskTotalGB = totalGB
 				}
 				g.nodes[i].UptimeSeconds = time.Since(g.startTime).Seconds()
+				g.nodes[i].GPU = RefreshGPUAvailableVRAM(g.nodes[i].GPU, g.gpuConfig)
 				g.nodes[i].LastSeen = &now
 				break
 			}
@@ -376,9 +387,23 @@ func (g *Gossip) pollPeers() {
 				nodes[i].DiskTotalGB = hr.DiskTotalGB
 				metricsChanged = true
 			}
-			// Update GPU info from peer health response.
-			if hr.GPU != nil {
+			// Update GPU info from peer health response (including nil to clear stale data).
+			if hr.GPU != nodes[i].GPU {
+				gpuChanged := false
+				if hr.GPU == nil && nodes[i].GPU != nil {
+					gpuChanged = true
+				} else if hr.GPU != nil && nodes[i].GPU == nil {
+					gpuChanged = true
+				} else if hr.GPU != nil && nodes[i].GPU != nil &&
+					(hr.GPU.Name != nodes[i].GPU.Name ||
+						hr.GPU.VRAMTotalGB != nodes[i].GPU.VRAMTotalGB ||
+						hr.GPU.VRAMAvailableGB != nodes[i].GPU.VRAMAvailableGB) {
+					gpuChanged = true
+				}
 				nodes[i].GPU = hr.GPU
+				if gpuChanged {
+					metricsChanged = true
+				}
 			}
 			// Update uptime locally but don't trigger event broadcast —
 			// uptime always changes and would cause gossip spam every poll.

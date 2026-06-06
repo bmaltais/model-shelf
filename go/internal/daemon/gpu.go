@@ -1,11 +1,18 @@
 package daemon
 
 import (
+	"context"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
+
+// gpuDetectTimeout is the maximum time allowed for GPU detection commands.
+const gpuDetectTimeout = 5 * time.Second
 
 // GPUInfo describes GPU hardware on a node.
 type GPUInfo struct {
@@ -14,15 +21,9 @@ type GPUInfo struct {
 	VRAMAvailableGB float64 `json:"vram_available_gb"`
 }
 
-// GPUOverride holds manual GPU configuration from config.toml.
-type GPUOverride struct {
-	Name        string  `toml:"name"`
-	VRAMTotalGB float64 `toml:"vram_total_gb"`
-}
-
 // DetectGPU auto-detects GPU hardware. Returns nil if no GPU is found.
-// If override is non-nil, it is used instead of auto-detection for name and total VRAM.
-func DetectGPU(override *GPUOverride) *GPUInfo {
+// If override is non-nil and has a name set, it is used instead of auto-detection.
+func DetectGPU(override *meshconfig.GPUConfig) *GPUInfo {
 	if override != nil && override.Name != "" {
 		return &GPUInfo{
 			Name:            override.Name,
@@ -44,9 +45,12 @@ func DetectGPU(override *GPUOverride) *GPUInfo {
 	return nil
 }
 
-// RefreshGPUAvailableVRAM updates only the available VRAM field.
-// Returns nil if no GPU is detected or the refresh fails.
-func RefreshGPUAvailableVRAM(current *GPUInfo, override *GPUOverride) *GPUInfo {
+// RefreshGPUAvailableVRAM updates the available VRAM field by re-querying hardware.
+// Returns the current value unchanged if:
+//   - current is nil (no GPU known)
+//   - override is set (can't refresh dynamically)
+//   - detection commands fail (preserves last known value)
+func RefreshGPUAvailableVRAM(current *GPUInfo, override *meshconfig.GPUConfig) *GPUInfo {
 	if current == nil {
 		return nil
 	}
@@ -68,9 +72,12 @@ func RefreshGPUAvailableVRAM(current *GPUInfo, override *GPUOverride) *GPUInfo {
 	return current
 }
 
-// detectNvidia runs nvidia-smi and parses GPU info.
+// detectNvidia runs nvidia-smi with a timeout and parses GPU info.
 func detectNvidia() *GPUInfo {
-	out, err := exec.Command("nvidia-smi",
+	ctx, cancel := context.WithTimeout(context.Background(), gpuDetectTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "nvidia-smi",
 		"--query-gpu=name,memory.total,memory.free",
 		"--format=csv,noheader,nounits",
 	).Output()
@@ -114,26 +121,30 @@ func detectUnifiedMemory() *GPUInfo {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), gpuDetectTimeout)
+	defer cancel()
+
 	// Use sysctl to get total memory.
-	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	out, err := exec.CommandContext(ctx, "sysctl", "-n", "hw.memsize").Output()
 	if err != nil {
 		return nil
 	}
-	bytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	memBytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
 	if err != nil {
 		return nil
 	}
-	totalGB := float64(bytes) / (1024 * 1024 * 1024)
+	totalGB := float64(memBytes) / (1024 * 1024 * 1024)
 
 	// Get chip name from sysctl.
-	chipOut, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output()
+	chipOut, err := exec.CommandContext(ctx, "sysctl", "-n", "machdep.cpu.brand_string").Output()
 	chipName := "Apple Silicon"
 	if err == nil {
 		chipName = strings.TrimSpace(string(chipOut))
 	}
 
 	// Get available memory via vm_stat (approximate).
-	availableGB := estimateFreeMemoryDarwin()
+	availableGB := estimateFreeMemoryDarwin(ctx)
 	if availableGB <= 0 {
 		availableGB = totalGB // fallback: report total
 	}
@@ -146,8 +157,8 @@ func detectUnifiedMemory() *GPUInfo {
 }
 
 // estimateFreeMemoryDarwin uses vm_stat to estimate free memory on macOS.
-func estimateFreeMemoryDarwin() float64 {
-	out, err := exec.Command("vm_stat").Output()
+func estimateFreeMemoryDarwin(ctx context.Context) float64 {
+	out, err := exec.CommandContext(ctx, "vm_stat").Output()
 	if err != nil {
 		return 0
 	}

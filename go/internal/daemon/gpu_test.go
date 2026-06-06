@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"testing"
+
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
 
 func TestParseNvidiaSMI(t *testing.T) {
@@ -77,7 +79,7 @@ func TestParseNvidiaSMI(t *testing.T) {
 func TestDetectGPU_Override(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	override := &GPUOverride{
+	override := &meshconfig.GPUConfig{
 		Name:        "Custom GPU",
 		VRAMTotalGB: 128.0,
 	}
@@ -136,7 +138,7 @@ func TestRefreshGPUAvailableVRAM_Override(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	current := &GPUInfo{Name: "Test GPU", VRAMTotalGB: 64, VRAMAvailableGB: 32}
-	override := &GPUOverride{Name: "Test GPU", VRAMTotalGB: 64}
+	override := &meshconfig.GPUConfig{Name: "Test GPU", VRAMTotalGB: 64}
 	result := RefreshGPUAvailableVRAM(current, override)
 	if result != current {
 		t.Error("expected same pointer back with override")
