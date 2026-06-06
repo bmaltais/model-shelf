@@ -80,7 +80,7 @@ Usage:
   model-shelf list                     List shelf contents
   model-shelf nodes [--json]            List mesh nodes
   model-shelf inventory [--json]        List models across all mesh nodes
-  model-shelf pull <repo> --target <node> Pull a model to a target node
+  model-shelf pull <repo> [--target <node>] Pull a model to a target node
   model-shelf status [<job_id>] [flags]  Show job status
   model-shelf role <set|add|remove>    Manage node roles
   model-shelf daemon                   Start the mesh daemon (foreground)

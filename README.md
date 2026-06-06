@@ -220,6 +220,11 @@ model-shelf inventory --json
 model-shelf pull "Qwen/Qwen3-14B-GGUF" --target gpu-box-1 --quant Q4_K_M
 model-shelf pull "mlx-community/Qwen3-14B-4bit" --target mac-mini
 
+# Smart placement: auto-select best Executor when --target is omitted
+# Queries HF API for model size, estimates VRAM, picks the best Executor
+model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M
+model-shelf pull "mlx-community/Qwen3-14B-4bit" --json
+
 # Show job status (downloads, transfers)
 # Defaults to mesh-wide on controller nodes or when seeds are configured
 model-shelf status
@@ -361,6 +366,17 @@ For `pull` operations to a target node:
 
 1. **Peer transfer** — if another mesh node already has the model, the target pulls directly from the peer (node-to-node, no re-download from HF). GGUF files transfer as single files; MLX/safetensors transfer as tar archives.
 2. **HF download** — if no peer has the model, downloads from Hugging Face Hub directly to the target.
+
+### Smart Placement
+
+When `--target` is omitted from `model-shelf pull`, smart placement auto-selects the best Executor node:
+
+1. **Estimate VRAM** — queries the HF API for file sizes (without downloading). GGUF: file_size × 1.1; safetensors/mlx: sum of weight files × 1.1.
+2. **Filter** — finds all online Executor nodes where total VRAM ≥ estimated requirement.
+3. **Rank** — prefers Executors that already have the model on disk, then most free disk space.
+4. **Error** — if no Executor can fit the model, returns a clear error listing available VRAM vs. what's needed.
+
+With `--json`, the response includes a `placement` field showing the selected node and reason.
 
 Set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` for gated model access.
 
