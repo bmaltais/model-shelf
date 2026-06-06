@@ -54,10 +54,10 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(pathParts) < 3 {
+	if len(pathParts) != 3 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "invalid path: missing publisher/repo"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid path: expected exactly /v1/models/{format}/{publisher}/{repo}/download"})
 		return
 	}
 
@@ -92,16 +92,22 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update last-accessed on the source node.
+	// Update last-accessed on the source node (with inventory lock).
 	var size int64
 	if info.IsDir() {
 		size = dirSizeBytes(shelfPath)
 	} else {
 		size = info.Size()
 	}
-	d.inventory.Touch(repoID, format, quant, size)
-	if err := d.inventory.Save(); err != nil {
-		log.Printf("transfer: failed to save inventory after touch: %v", err)
+	release, lockErr := acquireInventoryLock()
+	if lockErr != nil {
+		log.Printf("transfer: failed to acquire inventory lock: %v", lockErr)
+	} else {
+		d.inventory.Touch(repoID, format, quant, size)
+		if err := d.inventory.Save(); err != nil {
+			log.Printf("transfer: failed to save inventory after touch: %v", err)
+		}
+		release()
 	}
 
 	// Serve the model.
@@ -133,6 +139,7 @@ func resolveShelfPath(shelfRoot, format, repoID, quant string) (string, error) {
 }
 
 // streamTarDirectory streams a directory as a tar archive to the HTTP response.
+// Only regular files are included; symlinks and other special files are skipped.
 func streamTarDirectory(w io.Writer, dir string) {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
@@ -141,7 +148,8 @@ func streamTarDirectory(w io.Writer, dir string) {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		// Skip directories, symlinks, and non-regular files.
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 
@@ -165,16 +173,13 @@ func streamTarDirectory(w io.Writer, dir string) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-
-		_, err = io.Copy(tw, f)
-		return err
+		_, copyErr := io.Copy(tw, f)
+		f.Close()
+		return copyErr
 	})
 }
 
 const (
-	// transferBufSize is the buffer size for streaming transfers (256KB).
-	transferBufSize = 256 * 1024
 	// progressReportInterval is how often progress is reported to the job store (1MB).
 	progressReportInterval = 1024 * 1024
 )
@@ -305,27 +310,13 @@ func (d *Daemon) transferGGUF(jobID string, body io.Reader, totalBytes int64, re
 		return fmt.Errorf("creating file: %w", err)
 	}
 
-	var written int64
-	buf := make([]byte, transferBufSize)
-	for {
-		n, readErr := body.Read(buf)
-		if n > 0 {
-			if _, writeErr := f.Write(buf[:n]); writeErr != nil {
-				f.Close()
-				os.Remove(partial)
-				return fmt.Errorf("writing file: %w", writeErr)
-			}
-			written += int64(n)
-			d.jobs.SetProgress(jobID, written, totalBytes)
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				break
-			}
-			f.Close()
-			os.Remove(partial)
-			return fmt.Errorf("reading from peer: %w", readErr)
-		}
+	// Use progressReader to throttle progress updates (every 1MB).
+	pr := &progressReader{reader: body, jobID: jobID, total: totalBytes, jobs: d.jobs}
+	_, copyErr := io.Copy(f, pr)
+	if copyErr != nil {
+		f.Close()
+		os.Remove(partial)
+		return fmt.Errorf("writing file: %w", copyErr)
 	}
 
 	if err := f.Close(); err != nil {
@@ -370,8 +361,9 @@ func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64
 
 		targetPath := filepath.Join(destDir, header.Name)
 
-		// Security: prevent path traversal.
-		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(destDir)) {
+		// Security: prevent path traversal using filepath.Rel.
+		rel, relErr := filepath.Rel(destDir, filepath.Clean(targetPath))
+		if relErr != nil || strings.HasPrefix(rel, "..") {
 			continue
 		}
 
