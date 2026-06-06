@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -217,6 +218,15 @@ func cmdResolve(args []string) int {
 		return 1
 	}
 
+	// When model is missing locally, check mesh peers for availability.
+	if result.Status == "missing" {
+		if meshPeers := queryMeshPeers(repoID, format, quant); len(meshPeers) > 0 {
+			result.Status = "missing_locally"
+			result.Source = "mesh"
+			result.MeshAvailable = meshPeers
+		}
+	}
+
 	if flags["json"] == "true" {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -225,7 +235,7 @@ func cmdResolve(args []string) int {
 		printResultPretty(repoID, result)
 	}
 
-	if result.Status == "missing" {
+	if result.Status == "missing" || result.Status == "missing_locally" {
 		return 1
 	}
 
@@ -256,6 +266,11 @@ func printResultPretty(repoID string, result *resolver.ResolveResult) {
 	if result.Status == "downloaded" {
 		fmt.Printf("  fetch  huggingface.co/%-33s downloaded\n", repoID)
 	}
+	if len(result.MeshAvailable) > 0 {
+		for _, m := range result.MeshAvailable {
+			fmt.Printf("  mesh   %-48s available\n", m.Node)
+		}
+	}
 	fmt.Println()
 	fmt.Printf("  status      %s\n", result.Status)
 	fmt.Printf("  source      %s\n", result.Source)
@@ -265,6 +280,70 @@ func printResultPretty(repoID string, result *resolver.ResolveResult) {
 		path = *result.Path
 	}
 	fmt.Printf("  path        %s\n", path)
+}
+
+// queryMeshPeers queries the local daemon for mesh peers that have the model.
+// Returns nil if the daemon is not running or no peers have the model.
+func queryMeshPeers(repoID, format, quant string) []resolver.MeshLocation {
+	if !meshconfig.Exists() {
+		return nil
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		return nil
+	}
+
+	// Get node list from local daemon.
+	nodes, err := fetchNodes(cfg)
+	if err != nil {
+		return nil
+	}
+
+	// Query each peer's inventory for the model.
+	var locations []resolver.MeshLocation
+	for _, node := range nodes {
+		if node.Name == cfg.Name {
+			continue // skip self — already checked locally
+		}
+		if node.Status == daemon.StatusOffline {
+			continue
+		}
+		entries := fetchPeerInventoryForResolve(node, cfg)
+		for _, e := range entries {
+			if e.RepoID != repoID || e.Format != format {
+				continue
+			}
+			if format == "gguf" && !strings.EqualFold(e.Quant, quant) {
+				continue
+			}
+			// Construct a relative path representing where the model lives
+			// under the peer's shelf_root (e.g. "gguf/publisher/repo/file.gguf").
+			var peerPath string
+			if format == "gguf" {
+				p, err := resolver.ShelfPathGGUF("/", repoID, quant)
+				if err == nil {
+					peerPath = strings.TrimPrefix(filepath.ToSlash(p), "/")
+				}
+			} else {
+				p, err := resolver.ShelfPathSnapshot("/", repoID, format)
+				if err == nil {
+					peerPath = strings.TrimPrefix(filepath.ToSlash(p), "/")
+				}
+			}
+			locations = append(locations, resolver.MeshLocation{
+				Node: node.Name,
+				Path: peerPath,
+			})
+			break
+		}
+	}
+	return locations
+}
+
+// fetchPeerInventoryForResolve queries a single node's inventory endpoint.
+func fetchPeerInventoryForResolve(node daemon.MeshNode, cfg *meshconfig.Config) []daemon.InventoryEntry {
+	entries, _ := fetchNodeInventory(node, cfg)
+	return entries
 }
 
 func cmdInit(args []string) int {
@@ -342,6 +421,14 @@ func cmdInit(args []string) int {
 	name := flags["name"]
 	if name == "" {
 		name = meshconfig.GetHostname()
+	}
+
+	// If force-overwriting and the name is changing, broadcast a leave event
+	// for the old identity to prevent phantom nodes in the mesh.
+	if force && meshconfig.Exists() {
+		if oldCfg, err := meshconfig.Load(); err == nil && oldCfg.Name != name {
+			broadcastLeaveForOldNode(oldCfg)
+		}
 	}
 
 	// Create shelf directories first (fail early before writing config).
@@ -432,6 +519,64 @@ func cmdInit(args []string) int {
 	}
 
 	return 0
+}
+
+// broadcastLeaveForOldNode sends a leave event for the old node name to all
+// known online mesh peers. This prevents phantom nodes when init --force changes
+// the node name. Best-effort — failures are silently ignored since daemon restart
+// will handle gossip convergence.
+func broadcastLeaveForOldNode(oldCfg *meshconfig.Config) {
+	// Load mesh state to find peers to notify.
+	nodes, err := daemon.LoadMeshState()
+	if err != nil || len(nodes) == 0 {
+		return
+	}
+
+	leaveEvent := daemon.Event{
+		Type: daemon.EventLeave,
+		Node: daemon.MeshNode{
+			Name:    oldCfg.Name,
+			Address: meshconfig.GetHostname(),
+			Port:    oldCfg.Port,
+		},
+		Timestamp: time.Now(),
+	}
+	data, err := json.Marshal(leaveEvent)
+	if err != nil {
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, node := range nodes {
+		if node.Name == oldCfg.Name {
+			continue
+		}
+		if node.Status == daemon.StatusOffline {
+			continue
+		}
+		url := fmt.Sprintf("http://%s:%d/v1/events", node.Address, node.Port)
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if oldCfg.MeshKey != "" {
+			req.Header.Set("Authorization", "Bearer "+oldCfg.MeshKey)
+		}
+		if resp, err := client.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	// Also remove old entry from local mesh state to prevent self-contamination.
+	var filtered []daemon.MeshNode
+	for _, n := range nodes {
+		if n.Name == oldCfg.Name {
+			continue
+		}
+		filtered = append(filtered, n)
+	}
+	_ = daemon.SaveMeshState(filtered)
 }
 
 func cmdFind(args []string) int {
