@@ -238,6 +238,7 @@ func cmdResolve(args []string) int {
 		if len(meshPeers) > 0 {
 			if cfg.AllowDownloads {
 				// Attempt pull from a mesh peer via the local daemon.
+				fmt.Fprintf(os.Stderr, "resolve: attempting transfer from mesh peer...\n")
 				if peerResult := pullFromMeshPeer(repoID, format, quant, cfg.ShelfRoot); peerResult != nil {
 					result = peerResult
 				}
@@ -252,7 +253,7 @@ func cmdResolve(args []string) int {
 	}
 
 	// If still missing and downloads are allowed, fall back to HF download.
-	if result.Status == "missing" && cfg.AllowDownloads {
+	if (result.Status == "missing" || result.Status == "missing_locally") && cfg.AllowDownloads {
 		result, err = resolver.ResolveModel(cfg, repoID, format, quant)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

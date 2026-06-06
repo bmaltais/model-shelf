@@ -228,7 +228,7 @@ func TestSelectExecutor_CPUOnlyNodeWithModelOnDisk(t *testing.T) {
 	if result.Target != "cpu-node" {
 		t.Errorf("expected cpu-node (has model on disk, bypasses VRAM filter), got %s", result.Target)
 	}
-	if result.Reason != "already has model on disk and not currently serving" {
+	if result.Reason != "already has model on disk and not currently serving (CPU inference — no GPU)" {
 		t.Errorf("unexpected reason: %s", result.Reason)
 	}
 }
