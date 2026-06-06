@@ -54,13 +54,20 @@ type Check struct {
 	Result   string `json:"result"`
 }
 
+// MeshLocation describes a mesh peer that has a copy of the requested model.
+type MeshLocation struct {
+	Node string `json:"node"`
+	Path string `json:"path"`
+}
+
 // ResolveResult is returned by ResolveModel.
 type ResolveResult struct {
-	Status string  `json:"status"` // "found" | "downloaded" | "missing"
-	Source string  `json:"source"` // "local_shelf" | "huggingface" | "none"
-	Format string  `json:"format"` // "gguf" | "mlx" | "safetensors"
-	Path   *string `json:"path"`   // file for gguf, directory for mlx/safetensors
-	Checks []Check `json:"checks"`
+	Status        string         `json:"status"`                   // "found" | "downloaded" | "missing" | "missing_locally"
+	Source        string         `json:"source"`                   // "local_shelf" | "huggingface" | "none" | "mesh"
+	Format        string         `json:"format"`                   // "gguf" | "mlx" | "safetensors"
+	Path          *string        `json:"path"`                     // file for gguf, directory for mlx/safetensors
+	MeshAvailable []MeshLocation `json:"mesh_available,omitempty"` // peers that have this model
+	Checks        []Check        `json:"checks"`
 }
 
 // StorageNotAvailableError is returned when the shelf volume is unmounted.

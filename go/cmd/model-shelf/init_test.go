@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
 
@@ -409,5 +411,60 @@ func TestCmdInit_SeedWithoutKey(t *testing.T) {
 	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
 	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
 		t.Errorf("mesh.key should not exist without --key flag for store role")
+	}
+}
+
+func TestCmdInit_ForceNameChangeRemovesOldNodeFromState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// First init with name "localtest".
+	code := cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "localtest"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Simulate mesh state with the old name and another peer.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "localtest", Address: "ocilab1", Port: 8844, Status: daemon.StatusOnline},
+		{Name: "mini1", Address: "mini1", Port: 8844, Status: daemon.StatusOnline},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o600)
+
+	// Re-init with --force and a new name.
+	code = cmdInit([]string{"--role", "controller,store", "--shelf", shelfPath, "--name", "ocilab1", "--force"})
+	if code != 0 {
+		t.Fatalf("force init with new name failed with code %d", code)
+	}
+
+	// Verify the old node name was removed from local mesh state.
+	stateData, err := os.ReadFile(filepath.Join(stateDir, "mesh.json"))
+	if err != nil {
+		t.Fatalf("failed to read mesh.json: %v", err)
+	}
+	var updatedNodes []daemon.MeshNode
+	if err := json.Unmarshal(stateData, &updatedNodes); err != nil {
+		t.Fatalf("failed to parse mesh.json: %v", err)
+	}
+
+	for _, n := range updatedNodes {
+		if n.Name == "localtest" {
+			t.Errorf("old node name 'localtest' should have been removed from mesh state, but it's still present")
+		}
+	}
+	// mini1 should still be present.
+	found := false
+	for _, n := range updatedNodes {
+		if n.Name == "mini1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("peer 'mini1' should still be in mesh state")
 	}
 }
