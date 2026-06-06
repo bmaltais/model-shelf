@@ -586,10 +586,6 @@ func collectShelfEntries(root string) ([]ShelfEntry, []error) {
 						if f.IsDir() || !strings.HasSuffix(strings.ToLower(f.Name()), ".gguf") {
 							continue
 						}
-						// Skip in-progress downloads (.partial files).
-						if strings.HasSuffix(f.Name(), resolver.PartialSuffix) {
-							continue
-						}
 						fInfo, err := f.Info()
 						if err != nil {
 							errs = append(errs, fmt.Errorf("stat %s: %w", filepath.Join(repoPath, f.Name()), err))

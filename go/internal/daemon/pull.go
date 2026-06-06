@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -203,7 +204,8 @@ func (d *Daemon) proxyJobLookup(jobID string) *Job {
 		if node.Name == d.cfg.Name || node.Status == StatusOffline {
 			continue
 		}
-		url := fmt.Sprintf("http://%s:%d/v1/jobs?id=%s&local=true", node.Address, node.Port, jobID)
+		hostPort := net.JoinHostPort(node.Address, fmt.Sprintf("%d", node.Port))
+		url := fmt.Sprintf("http://%s/v1/jobs?id=%s&local=true", hostPort, jobID)
 		client := &http.Client{Timeout: 5 * time.Second}
 		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
@@ -216,14 +218,16 @@ func (d *Daemon) proxyJobLookup(jobID string) *Job {
 		if err != nil {
 			continue
 		}
-		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			continue
 		}
 		var job Job
 		if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+			resp.Body.Close()
 			continue
 		}
+		resp.Body.Close()
 		// Merge into local store so subsequent lookups are fast.
 		d.jobs.Merge([]Job{job})
 		return &job

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -207,5 +208,100 @@ func TestCmdPull_ErrorMessage_401(t *testing.T) {
 	}
 	if !strings.Contains(errOutput, "mesh key") {
 		t.Errorf("error should hint about mesh key, got: %s", errOutput)
+	}
+}
+
+func TestCmdPull_ErrorMessage_ConnectionRefused(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Point at a port where nothing is listening.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "dead-node", Address: "127.0.0.1", Port: 19999, Roles: []string{"store"}},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o644)
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	code := cmdPull([]string{"mlx-community/test-model-mlx", "--target", "dead-node"})
+
+	w.Close()
+	os.Stderr = oldStderr
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	errOutput := string(out)
+	if !strings.Contains(errOutput, "dead-node") {
+		t.Errorf("error should mention target name, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "POST /v1/pull") {
+		t.Errorf("error should mention endpoint, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "hint:") {
+		t.Errorf("error should include a hint for connection refused, got: %s", errOutput)
+	}
+	if !strings.Contains(errOutput, "daemon running") {
+		t.Errorf("hint should suggest checking if daemon is running, got: %s", errOutput)
+	}
+}
+
+func TestPullConnectionHint(t *testing.T) {
+	tests := []struct {
+		name    string
+		errMsg  string
+		wantSub string
+	}{
+		{"connection refused", "dial tcp 127.0.0.1:8844: connection refused", "daemon running"},
+		{"timeout", "context deadline exceeded", "unreachable or overloaded"},
+		{"no such host", "dial tcp: lookup badhost: no such host", "resolve hostname"},
+		{"no route", "dial tcp 10.0.0.99:8844: connect: no route to host", "no route"},
+		{"unknown error", "something else went wrong", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := fmt.Errorf("%s", tc.errMsg)
+			hint := pullConnectionHint(err, "target-node")
+			if tc.wantSub == "" {
+				if hint != "" {
+					t.Errorf("expected empty hint, got %q", hint)
+				}
+			} else {
+				if !strings.Contains(hint, tc.wantSub) {
+					t.Errorf("expected hint to contain %q, got %q", tc.wantSub, hint)
+				}
+			}
+		})
+	}
+}
+
+func TestPullStatusHint(t *testing.T) {
+	tests := []struct {
+		code    int
+		wantSub string
+	}{
+		{404, "v0.14+"},
+		{401, "mesh key"},
+		{403, "mesh key"},
+		{503, "starting up"},
+		{200, ""},
+	}
+	for _, tc := range tests {
+		hint := pullStatusHint(tc.code)
+		if tc.wantSub == "" {
+			if hint != "" {
+				t.Errorf("code %d: expected empty hint, got %q", tc.code, hint)
+			}
+		} else {
+			if !strings.Contains(hint, tc.wantSub) {
+				t.Errorf("code %d: expected hint containing %q, got %q", tc.code, tc.wantSub, hint)
+			}
+		}
 	}
 }

@@ -105,8 +105,9 @@ func cmdPull(args []string) int {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		hint := pullConnectionHint(err, target, addr, port)
-		fmt.Fprintf(os.Stderr, "error: pull failed — cannot reach target %q (%s)\n", target, net.JoinHostPort(addr, fmt.Sprintf("%d", port)))
+		endpoint := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
+		hint := pullConnectionHint(err, target)
+		fmt.Fprintf(os.Stderr, "error: pull failed — cannot reach target %q (%s) for POST /v1/pull\n", target, endpoint)
 		fmt.Fprintf(os.Stderr, "  %v\n", err)
 		if hint != "" {
 			fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
@@ -125,7 +126,7 @@ func cmdPull(args []string) int {
 		endpoint := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
 		var errResp map[string]string
 		if json.Unmarshal(respBody, &errResp) == nil && errResp["error"] != "" {
-			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned: %s\n", target, endpoint, errResp["error"])
+			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned HTTP %d for POST /v1/pull: %s\n", target, endpoint, resp.StatusCode, errResp["error"])
 		} else {
 			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned HTTP %d for POST /v1/pull\n", target, endpoint, resp.StatusCode)
 		}
@@ -196,15 +197,17 @@ func loadMeshKey() string {
 }
 
 // pullConnectionHint returns a human-readable hint for connection errors.
-func pullConnectionHint(err error, target, addr string, port int) string {
+func pullConnectionHint(err error, target string) string {
 	errStr := err.Error()
 	switch {
 	case strings.Contains(errStr, "connection refused"):
 		return fmt.Sprintf("is the daemon running on %s? check 'model-shelf service status' on %s", target, target)
 	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded"):
 		return fmt.Sprintf("target %s may be unreachable or overloaded", target)
-	case strings.Contains(errStr, "no such host") || strings.Contains(errStr, "no route"):
-		return fmt.Sprintf("cannot resolve hostname for %s — check network connectivity", target)
+	case strings.Contains(errStr, "no such host"):
+		return fmt.Sprintf("cannot resolve hostname for %s — check DNS or /etc/hosts", target)
+	case strings.Contains(errStr, "no route"):
+		return fmt.Sprintf("no route to %s — check network connectivity and firewall rules", target)
 	default:
 		return ""
 	}
