@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"archive/tar"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -239,6 +240,12 @@ const (
 	// fast LANs, making the first transfer ~60x slower than subsequent ones
 	// due to TCP slow-start amplification.
 	transferBufferSize = 1024 * 1024
+
+	// transferSocketBufSize is the OS-level TCP socket buffer (SO_RCVBUF/SO_SNDBUF) for
+	// peer transfers (4MB). The default kernel receive window (~87KB on Linux) limits
+	// throughput on high-latency links: at 40ms RTT, 87KB window → ~2 MB/s ceiling.
+	// A 4MB window raises that ceiling to ~100 MB/s, matching Tailscale's capacity.
+	transferSocketBufSize = 4 * 1024 * 1024
 )
 
 // peerSource describes a mesh peer that has a model available for transfer.
@@ -326,10 +333,27 @@ func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format
 		req.Header.Set("Authorization", "Bearer "+d.cfg.MeshKey)
 	}
 
-	// Use a transport with larger read buffer to reduce syscall overhead on
-	// fast LANs — the default net/http transport uses 4KB reads which causes
-	// excessive context switches during large file transfers.
+	// Use a transport with large userspace I/O buffers and a custom dialer that
+	// raises the OS TCP socket window (SO_RCVBUF/SO_SNDBUF) to 4MB. The default
+	// kernel receive window (~87KB) is the primary throughput ceiling on
+	// high-latency links such as Tailscale: 87KB ÷ 40ms RTT ≈ 2 MB/s.
+	dialer := &net.Dialer{}
 	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if tc, ok := conn.(*net.TCPConn); ok {
+				if err := tc.SetReadBuffer(transferSocketBufSize); err != nil {
+					log.Printf("transfer: SetReadBuffer failed (degraded throughput): %v", err)
+				}
+				if err := tc.SetWriteBuffer(transferSocketBufSize); err != nil {
+					log.Printf("transfer: SetWriteBuffer failed (degraded throughput): %v", err)
+				}
+			}
+			return conn, nil
+		},
 		ReadBufferSize:     transferBufferSize,
 		WriteBufferSize:    transferBufferSize,
 		DisableCompression: true,
