@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -226,9 +227,9 @@ func TestCmdResolve_MeshPeersQueried(t *testing.T) {
 	outBytes, _ := io.ReadAll(r)
 	output := string(outBytes)
 
-	// Should still exit 1 (missing locally) but with mesh info.
-	if code != 1 {
-		t.Errorf("expected exit code 1 (missing locally), got %d", code)
+	// Should exit 2 (missing locally — model exists on mesh peer).
+	if code != 2 {
+		t.Errorf("expected exit code 2 (missing locally), got %d", code)
 	}
 
 	var result resolver.ResolveResult
@@ -340,9 +341,9 @@ func TestCmdResolve_MLXPeerReturnsMissingLocally(t *testing.T) {
 	os.Stdout = oldStdout
 	outBytes, _ := io.ReadAll(r)
 
-	// Should exit 1 (missing locally) — not block or hang.
-	if code != 1 {
-		t.Errorf("expected exit code 1 (missing_locally), got %d", code)
+	// Should exit 2 (missing locally) — not block or hang.
+	if code != 2 {
+		t.Errorf("expected exit code 2 (missing_locally), got %d", code)
 	}
 
 	var result resolver.ResolveResult
@@ -357,5 +358,98 @@ func TestCmdResolve_MLXPeerReturnsMissingLocally(t *testing.T) {
 	}
 	if len(result.MeshAvailable) == 0 {
 		t.Error("expected mesh_available to contain entries")
+	}
+}
+
+// TestCmdResolve_SourceHFSkipsPeers verifies that --source=hf skips mesh peer
+// lookup and falls through directly to HF download (or miss if downloads disabled).
+func TestCmdResolve_SourceHFSkipsPeers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Set up a fake daemon that will fail the test if its /v1/nodes is queried.
+	peerCalled := false
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	daemonPort := ln.Addr().(*net.TCPAddr).Port
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			peerCalled = true
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: handler}}
+	srv.Start()
+	defer srv.Close()
+
+	// Write mesh config pointing to our fake daemon.
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := fmt.Sprintf("name = \"self-node\"\nport = %d\nroles = [\"store\"]\nshelf_root = \"%s\"\n", daemonPort, shelfRoot)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdResolve([]string{"bartowski/Llama-3.2-1B-Instruct-GGUF", "--quant", "Q4_K_M", "--source", "hf", "--no-download", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	io.ReadAll(r)
+
+	// With --source=hf and --no-download, should be a plain miss (exit 1), not missing_locally.
+	if code != 1 {
+		t.Errorf("expected exit code 1 (missing), got %d", code)
+	}
+	if peerCalled {
+		t.Error("--source=hf should skip mesh peer query, but /v1/nodes was called")
+	}
+}
+
+// TestCmdResolve_InvalidSource verifies that an invalid --source value produces an error.
+func TestCmdResolve_InvalidSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Capture stderr.
+	oldErr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	code := cmdResolve([]string{"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M", "--source", "invalid"})
+
+	w.Close()
+	os.Stderr = oldErr
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(string(out), "--source must be one of") {
+		t.Errorf("expected validation error about --source, got: %q", string(out))
 	}
 }

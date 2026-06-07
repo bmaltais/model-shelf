@@ -564,7 +564,7 @@ func TestExecutePull_PrefersPeerTransfer(t *testing.T) {
 
 	// Execute pull — should transfer from peer, not HF.
 	job := destD.jobs.Create("testorg/testmodel", "mlx", "", "dest-node")
-	destD.executePull(job.ID, "testorg/testmodel", "mlx", "", false)
+	destD.executePull(job.ID, "testorg/testmodel", "mlx", "", false, "auto")
 
 	got := destD.jobs.Get(job.ID)
 	if got.Status != JobCompleted {
@@ -639,7 +639,7 @@ func TestPeerTransfer_FallbackToHF(t *testing.T) {
 	// Execute pull — peer transfer will fail, should fall back to HF.
 	// HF will also fail (invalid repo), but the important thing is the fallback path is taken.
 	job := destD.jobs.Create("testorg/testmodel", "mlx", "", "dest-node")
-	destD.executePull(job.ID, "testorg/testmodel", "mlx", "", false)
+	destD.executePull(job.ID, "testorg/testmodel", "mlx", "", false, "auto")
 
 	got := destD.jobs.Get(job.ID)
 	// Should fail because HF download also fails (no real repo), but the job should

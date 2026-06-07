@@ -28,6 +28,7 @@ func UserConfigPath() string {
 type tomlConfig struct {
 	ShelfRoot      *string `toml:"shelf_root"`
 	AllowDownloads *bool   `toml:"allow_downloads"`
+	PreferSource   *string `toml:"prefer_source"`
 }
 
 func readConfig(path string) (*resolver.Config, error) {
@@ -37,9 +38,13 @@ func readConfig(path string) (*resolver.Config, error) {
 	}
 	cfg := &resolver.Config{
 		AllowDownloads: true,
+		PreferSource:   "auto",
 	}
 	if tc.AllowDownloads != nil {
 		cfg.AllowDownloads = *tc.AllowDownloads
+	}
+	if tc.PreferSource != nil {
+		cfg.PreferSource = *tc.PreferSource
 	}
 	if tc.ShelfRoot != nil {
 		root := *tc.ShelfRoot
@@ -172,8 +177,13 @@ func loadFromMeshConfig() (*resolver.Config, error) {
 	if mc.ShelfRoot == "" {
 		return nil, fmt.Errorf("mesh config has no shelf_root")
 	}
+	preferSource := mc.PreferSource
+	if preferSource == "" {
+		preferSource = "auto"
+	}
 	return &resolver.Config{
 		ShelfRoot:      mc.ShelfRoot,
 		AllowDownloads: true,
+		PreferSource:   preferSource,
 	}, nil
 }

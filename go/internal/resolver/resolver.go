@@ -45,6 +45,7 @@ var SafetensorsAllowPatterns = []string{
 type Config struct {
 	ShelfRoot      string
 	AllowDownloads bool
+	PreferSource   string // "auto" (default), "hf", "peer"
 }
 
 // Check represents a single shelf lookup attempt in the resolve log.
