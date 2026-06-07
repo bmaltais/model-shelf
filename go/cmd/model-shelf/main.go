@@ -1082,6 +1082,21 @@ func cmdDaemon(args []string) int {
 	return 0
 }
 
+// restartDaemonIfRunning stops and restarts the daemon service if it is currently
+// running, printing successMsg on success. Returns true if the daemon was restarted.
+func restartDaemonIfRunning(successMsg string) bool {
+	status, err := service.GetStatus()
+	if err != nil || !status.Running {
+		return false
+	}
+	if err := service.Restart(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to restart daemon: %v\n", err)
+		return false
+	}
+	fmt.Printf("model-shelf: %s\n", successMsg)
+	return true
+}
+
 func cmdService(args []string) int {
 	if len(args) < 1 || args[0] == "--help" || args[0] == "-h" {
 		fmt.Println("Usage: model-shelf service <install|uninstall|start|stop|restart|status>")
