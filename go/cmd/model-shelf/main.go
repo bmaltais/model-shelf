@@ -699,17 +699,29 @@ func cmdInit(args []string) int {
 	// 3. If controller role, generate a new key.
 	// 4. Otherwise, no key.
 	keyPath := meshconfig.MeshKeyPath()
+
+	// Read existing key (if any) before any modifications so we can detect key changes.
+	var existingKey string
+	if data, err := os.ReadFile(keyPath); err == nil {
+		existingKey = strings.TrimSpace(string(data))
+	}
+
 	if flagKey := flags["key"]; flagKey != "" {
+		if force && existingKey != "" && existingKey != flagKey {
+			warnKeyChangePeers(name, "replacing the mesh key")
+		}
 		if err := meshconfig.WriteMeshKey(flagKey); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing mesh key: %v\n", err)
 			return 1
 		}
 		fmt.Printf("model-shelf: stored mesh key at %s\n", keyPath)
-	} else if keyData, err := os.ReadFile(keyPath); err == nil && len(strings.TrimSpace(string(keyData))) > 0 {
-		key := strings.TrimSpace(string(keyData))
+	} else if existingKey != "" {
 		fmt.Printf("model-shelf: existing mesh key at %s (preserved)\n", keyPath)
-		fmt.Printf("\n  mesh key: %s\n\n", key)
+		fmt.Printf("\n  mesh key: %s\n\n", existingKey)
 	} else if seen["controller"] {
+		if force {
+			warnKeyChangePeers(name, "generating a new mesh key")
+		}
 		key, err := meshconfig.GenerateMeshKey()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error generating mesh key: %v\n", err)
@@ -806,6 +818,26 @@ func broadcastLeaveForOldNode(oldCfg *meshconfig.Config) {
 		filtered = append(filtered, n)
 	}
 	_ = daemon.SaveMeshState(filtered)
+}
+
+// warnKeyChangePeers checks mesh state for known peers and prints a warning
+// that they will need to re-join after a mesh key change. action describes
+// what triggered the change (e.g. "generating a new mesh key").
+func warnKeyChangePeers(selfName, action string) {
+	nodes, err := daemon.LoadMeshState()
+	if err != nil {
+		return
+	}
+	peers := 0
+	for _, n := range nodes {
+		if n.Name != selfName {
+			peers++
+		}
+	}
+	if peers == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s will disconnect %d peer(s) — they must re-join with the new key\n", action, peers)
 }
 
 func cmdFind(args []string) int {

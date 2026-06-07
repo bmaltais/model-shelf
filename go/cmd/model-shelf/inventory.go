@@ -131,13 +131,10 @@ func aggregateInventory(nodes []daemon.MeshNode, cfg *meshconfig.Config) []Inven
 
 // fetchNodeInventory queries a single node's /v1/inventory endpoint.
 // Returns the entries and whether the node was unreachable (stale=true means
-// the node was offline or the request failed; no cached data is returned).
+// the request failed; no cached data is returned).
+// Offline-status nodes are queried directly — they may be reachable before the
+// first gossip health poll confirms them online.
 func fetchNodeInventory(node daemon.MeshNode, cfg *meshconfig.Config) ([]daemon.InventoryEntry, bool) {
-	if node.Status == daemon.StatusOffline {
-		// Node offline — skip (no cached inventory per-node available via API).
-		return nil, true
-	}
-
 	url := fmt.Sprintf("http://%s:%d/v1/inventory", node.Address, node.Port)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
