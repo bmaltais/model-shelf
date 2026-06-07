@@ -59,6 +59,8 @@ func main() {
 		os.Exit(cmdRole(os.Args[2:]))
 	case "service":
 		os.Exit(cmdService(os.Args[2:]))
+	case "upgrade":
+		os.Exit(cmdUpgrade(os.Args[2:]))
 	case "version", "--version", "-v":
 		fmt.Printf("model-shelf %s (go)\n", version)
 		os.Exit(0)
@@ -89,6 +91,7 @@ Usage:
   model-shelf role <set|add|remove>    Manage node roles
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
+  model-shelf upgrade [flags]          Upgrade to the latest (or pinned) release
   model-shelf version                  Print version
 
 Join flags:
@@ -138,6 +141,11 @@ Service actions:
   stop               Stop the service
   restart            Restart the service (stop + start)
   status             Show whether the service is running
+
+Upgrade flags:
+  --version <x.y.z>  Pin upgrade to a specific release (default: latest)
+  --yes              Skip confirmation prompt
+  --force            Proceed even if already running the target version
 `, version)
 }
 
@@ -157,22 +165,24 @@ var booleanFlags = map[string]bool{
 	"help":        true,
 	"mesh":        true,
 	"local":       true,
+	"yes":         true,
 }
 
 // valueFlags lists flags that require a value argument.
 var valueFlags = map[string]bool{
-	"quant":  true,
-	"format": true,
-	"source": true,
-	"config": true,
-	"key":    true,
-	"limit":  true,
-	"shelf":  true,
-	"role":   true,
-	"name":   true,
-	"seed":   true,
-	"port":   true,
-	"target": true,
+	"quant":   true,
+	"format":  true,
+	"source":  true,
+	"config":  true,
+	"key":     true,
+	"limit":   true,
+	"shelf":   true,
+	"role":    true,
+	"name":    true,
+	"seed":    true,
+	"port":    true,
+	"target":  true,
+	"version": true,
 }
 
 // parseFlags is a minimal flag parser that handles --key value, --flag, and -h style args.
