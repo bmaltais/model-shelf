@@ -933,6 +933,15 @@ func cmdList(args []string) int {
 		return 1
 	}
 
+	// When shelf_root is explicitly configured but isn't accessible, error
+	// consistently with `resolve` rather than silently falling back.
+	if cfg.ShelfRoot != "" {
+		if err := resolver.CheckStorageAvailable(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
 	candidates := resolver.ListShelfCandidates(cfg)
 	if len(candidates) == 0 {
 		fmt.Fprintf(os.Stderr, "error: no shelf directories found\n")

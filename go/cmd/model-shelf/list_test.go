@@ -397,3 +397,59 @@ func TestCmdList_HumanReadable_IncludesFallbackShelf(t *testing.T) {
 		t.Errorf("expected model-B in output, got:\n%s", output)
 	}
 }
+
+func TestCmdList_NonExistentShelfRoot_Errors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write config pointing to a shelf that doesn't exist.
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"/nonexistent/path/that/does/not/exist\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Redirect stderr to capture error output.
+	oldStderr := os.Stderr
+	re, we, _ := os.Pipe()
+	os.Stderr = we
+
+	code := cmdList([]string{})
+
+	we.Close()
+	os.Stderr = oldStderr
+	errOut, _ := io.ReadAll(re)
+
+	if code != 1 {
+		t.Fatalf("expected exit 1 when shelf_root doesn't exist, got %d", code)
+	}
+	if !strings.Contains(string(errOut), "doesn't exist") {
+		t.Errorf("expected error about missing shelf, got stderr: %q", errOut)
+	}
+}
+
+func TestCmdList_NonExistentShelfRoot_Errors_JSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"/nonexistent/path/that/does/not/exist\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	oldStderr := os.Stderr
+	re, we, _ := os.Pipe()
+	os.Stderr = we
+
+	code := cmdList([]string{"--json"})
+
+	we.Close()
+	os.Stderr = oldStderr
+	errOut, _ := io.ReadAll(re)
+
+	if code != 1 {
+		t.Fatalf("expected exit 1 when shelf_root doesn't exist, got %d", code)
+	}
+	if !strings.Contains(string(errOut), "doesn't exist") {
+		t.Errorf("expected error about missing shelf, got stderr: %q", errOut)
+	}
+}
