@@ -252,7 +252,7 @@ func (d *Daemon) findPeerWithModel(repoID, format, quant string) *peerSource {
 // transferFromPeer downloads a model from a peer node's download endpoint.
 // Returns nil on success, or an error if the transfer fails.
 func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format, quant string) error {
-	d.jobs.SetTransferring(jobID)
+	d.jobs.SetTransferring(jobID, peer.Name)
 	log.Printf("transfer: starting peer transfer of %s (format=%s, quant=%s) from %s, job=%s",
 		repoID, format, quant, peer.Name, jobID)
 

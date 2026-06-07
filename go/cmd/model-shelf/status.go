@@ -192,12 +192,16 @@ func printJobTable(jobs []daemon.Job) {
 
 func printJobDetail(j daemon.Job) {
 	fmt.Printf("  job_id      %s\n", j.ID)
+	fmt.Printf("  type        %s\n", j.Type)
 	fmt.Printf("  model       %s\n", j.RepoID)
 	fmt.Printf("  format      %s\n", j.Format)
 	if j.Quant != "" {
 		fmt.Printf("  quant       %s\n", j.Quant)
 	}
 	fmt.Printf("  target      %s\n", j.Target)
+	if j.Source != "" {
+		fmt.Printf("  source      %s\n", j.Source)
+	}
 	fmt.Printf("  status      %s\n", j.Status)
 	fmt.Printf("  progress    %s\n", progressStr(j))
 	fmt.Printf("  started     %s\n", j.CreatedAt.Format(time.RFC3339))

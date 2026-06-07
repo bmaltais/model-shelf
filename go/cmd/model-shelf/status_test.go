@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -160,6 +161,136 @@ func TestCmdStatus_NoJobs(t *testing.T) {
 	code := cmdStatus(nil)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
+	}
+}
+
+func TestCmdStatus_SingleJob_JSON_TransferFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	job := daemon.Job{
+		ID:              "transfer123456ab",
+		Type:            daemon.JobTypeTransfer,
+		RepoID:          "Qwen/Qwen3-14B-GGUF",
+		Format:          "gguf",
+		Quant:           "Q4_K_M",
+		Target:          "gpu-box-1",
+		Source:          "nas-store",
+		Status:          daemon.JobTransferring,
+		BytesDownloaded: 4_160_000_000,
+		BytesTotal:      8_320_000_000,
+		CreatedAt:       now.Add(-5 * time.Minute),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id") == "transfer123456ab" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(job)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdStatus([]string{"transfer123456ab", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("expected valid JSON, got: %s (parse error: %v)", out, err)
+	}
+	if result["type"] != "transfer" {
+		t.Errorf("expected type=transfer, got %v", result["type"])
+	}
+	if result["source"] != "nas-store" {
+		t.Errorf("expected source=nas-store, got %v", result["source"])
+	}
+	if result["job_id"] != "transfer123456ab" {
+		t.Errorf("expected job_id=transfer123456ab, got %v", result["job_id"])
+	}
+}
+
+func TestCmdStatus_AllJobs_JSON_IncludesType(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	jobs := []daemon.Job{
+		{
+			ID:        "download789",
+			Type:      daemon.JobTypeDownload,
+			RepoID:    "mlx-community/Qwen3-14B-mlx",
+			Format:    "mlx",
+			Target:    "ocilab1",
+			Status:    daemon.JobDownloading,
+			CreatedAt: now,
+		},
+		{
+			ID:        "transfer789",
+			Type:      daemon.JobTypeTransfer,
+			RepoID:    "Qwen/Qwen3-14B-GGUF",
+			Format:    "gguf",
+			Quant:     "Q4_K_M",
+			Target:    "mini2",
+			Source:    "mini1",
+			Status:    daemon.JobTransferring,
+			CreatedAt: now,
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdStatus([]string{"--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	var result []map[string]interface{}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("expected valid JSON array, got: %s (parse error: %v)", out, err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(result))
+	}
+	if result[0]["type"] != "download" {
+		t.Errorf("expected first job type=download, got %v", result[0]["type"])
+	}
+	if result[1]["type"] != "transfer" {
+		t.Errorf("expected second job type=transfer, got %v", result[1]["type"])
+	}
+	if result[1]["source"] != "mini1" {
+		t.Errorf("expected second job source=mini1, got %v", result[1]["source"])
 	}
 }
 

@@ -452,11 +452,17 @@ func TestJobStore_Transferring(t *testing.T) {
 	store := NewJobStore()
 
 	job := store.Create("test/model", "mlx", "", "node-1")
-	store.SetTransferring(job.ID)
+	store.SetTransferring(job.ID, "peer-node")
 
 	got := store.Get(job.ID)
 	if got.Status != JobTransferring {
 		t.Fatalf("expected transferring, got %s", got.Status)
+	}
+	if got.Type != JobTypeTransfer {
+		t.Fatalf("expected type transfer, got %s", got.Type)
+	}
+	if got.Source != "peer-node" {
+		t.Fatalf("expected source peer-node, got %s", got.Source)
 	}
 }
 

@@ -23,13 +23,23 @@ const (
 // retentionPeriod is how long completed/failed jobs are kept before pruning.
 const retentionPeriod = 24 * time.Hour
 
+// JobType distinguishes downloads from peer transfers.
+type JobType string
+
+const (
+	JobTypeDownload JobType = "download"
+	JobTypeTransfer JobType = "transfer"
+)
+
 // Job tracks an async pull or transfer operation.
 type Job struct {
 	ID              string     `json:"job_id"`
+	Type            JobType    `json:"type"`
 	RepoID          string     `json:"repo_id"`
 	Format          string     `json:"format"`
 	Quant           string     `json:"quant,omitempty"`
 	Target          string     `json:"target"`
+	Source          string     `json:"source,omitempty"`
 	Status          JobStatus  `json:"status"`
 	BytesDownloaded int64      `json:"bytes_downloaded"`
 	BytesTotal      int64      `json:"bytes_total"`
@@ -56,6 +66,7 @@ func (s *JobStore) Create(repoID, format, quant, target string) *Job {
 	id := generateJobID()
 	job := &Job{
 		ID:        id,
+		Type:      JobTypeDownload,
 		RepoID:    repoID,
 		Format:    format,
 		Quant:     quant,
@@ -91,12 +102,14 @@ func (s *JobStore) SetDownloading(id string) {
 	}
 }
 
-// SetTransferring marks a job as transferring.
-func (s *JobStore) SetTransferring(id string) {
+// SetTransferring marks a job as transferring from a peer source.
+func (s *JobStore) SetTransferring(id string, source string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
 		j.Status = JobTransferring
+		j.Type = JobTypeTransfer
+		j.Source = source
 	}
 }
 
