@@ -244,14 +244,37 @@ func ShelfPathSnapshot(shelfRoot, repoID, format string) (string, error) {
 	return filepath.Join(shelfRoot, format, publisher, repo), nil
 }
 
-// looksLikeModelDir checks if a path is a directory containing config.json.
+// looksLikeModelDir checks if a path is a directory containing config.json
+// and at least one weight file (.safetensors, .bin, .npz, .npy, or .gguf).
+// A directory with only config.json (e.g. from an interrupted transfer) is
+// considered incomplete and returns false.
 func looksLikeModelDir(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	_, err = os.Stat(filepath.Join(path, "config.json"))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(path, "config.json")); err != nil {
+		return false
+	}
+	// Require at least one weight file.
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if strings.HasSuffix(name, ".safetensors") ||
+			strings.HasSuffix(name, ".bin") ||
+			strings.HasSuffix(name, ".npz") ||
+			strings.HasSuffix(name, ".npy") ||
+			strings.HasSuffix(name, ".gguf") {
+			return true
+		}
+	}
+	return false
 }
 
 // volumesDir returns the platform-specific volumes directory.

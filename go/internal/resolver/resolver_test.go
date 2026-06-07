@@ -358,4 +358,57 @@ func TestClarify401_UnexpectedStatus(t *testing.T) {
 	}
 }
 
+func TestLooksLikeModelDir_RequiresWeightFile(t *testing.T) {
+	// Directory with only config.json should NOT be detected as a valid model.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644)
 
+	if looksLikeModelDir(dir) {
+		t.Error("expected false for directory with only config.json (no weight files)")
+	}
+}
+
+func TestLooksLikeModelDir_WithSafetensors(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0o644)
+
+	if !looksLikeModelDir(dir) {
+		t.Error("expected true for directory with config.json and .safetensors file")
+	}
+}
+
+func TestLooksLikeModelDir_WithBinFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(dir, "pytorch_model.bin"), []byte("weights"), 0o644)
+
+	if !looksLikeModelDir(dir) {
+		t.Error("expected true for directory with config.json and .bin file")
+	}
+}
+
+func TestLooksLikeModelDir_WithNpyFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(dir, "weights.npz"), []byte("weights"), 0o644)
+
+	if !looksLikeModelDir(dir) {
+		t.Error("expected true for directory with config.json and .npz file")
+	}
+}
+
+func TestLooksLikeModelDir_NoConfigJson(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0o644)
+
+	if looksLikeModelDir(dir) {
+		t.Error("expected false for directory without config.json")
+	}
+}
+
+func TestLooksLikeModelDir_NonExistentPath(t *testing.T) {
+	if looksLikeModelDir("/nonexistent/path/xyz") {
+		t.Error("expected false for non-existent path")
+	}
+}

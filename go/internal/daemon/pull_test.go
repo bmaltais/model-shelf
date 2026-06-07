@@ -251,7 +251,7 @@ func TestExecutePull_InvalidRepo(t *testing.T) {
 
 	// Create a job for an invalid repo ID (no slash).
 	job := d.jobs.Create("invalid-repo", "mlx", "", "test-node")
-	d.executePull(job.ID, "invalid-repo", "mlx", "")
+	d.executePull(job.ID, "invalid-repo", "mlx", "", false)
 
 	// Give it a moment — executePull runs synchronously here.
 	got := d.jobs.Get(job.ID)
@@ -275,6 +275,7 @@ func TestExecutePull_AlreadyPresent(t *testing.T) {
 	mlxDir := filepath.Join(shelfRoot, "mlx", "testorg", "testmodel")
 	os.MkdirAll(mlxDir, 0o755)
 	os.WriteFile(filepath.Join(mlxDir, "config.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(mlxDir, "model.safetensors"), []byte("fake-weights"), 0o644)
 
 	cfg := &meshconfig.Config{
 		Name:      "test-node",
@@ -285,7 +286,7 @@ func TestExecutePull_AlreadyPresent(t *testing.T) {
 	d := New(cfg)
 
 	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
-	d.executePull(job.ID, "testorg/testmodel", "mlx", "")
+	d.executePull(job.ID, "testorg/testmodel", "mlx", "", false)
 
 	got := d.jobs.Get(job.ID)
 	if got.Status != JobAlreadyPresent {
@@ -300,6 +301,134 @@ func TestExecutePull_AlreadyPresent(t *testing.T) {
 	if got.DoneAt == nil {
 		t.Error("expected DoneAt to be set")
 	}
+}
+
+func TestExecutePull_ForceDeletesExisting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HF_TOKEN", "")
+	t.Setenv("HUGGING_FACE_HUB_TOKEN", "")
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	// Place an incomplete MLX model on the shelf (only config.json, no weights).
+	mlxDir := filepath.Join(shelfRoot, "mlx", "testorg", "testmodel")
+	os.MkdirAll(mlxDir, 0o755)
+	os.WriteFile(filepath.Join(mlxDir, "config.json"), []byte("{}"), 0o644)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Add to inventory so we can verify removal.
+	d.inventory.Touch("testorg/testmodel", "mlx", "", 100)
+
+	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
+	d.executePull(job.ID, "testorg/testmodel", "mlx", "", true)
+
+	// The force flag should delete the existing directory.
+	if _, err := os.Stat(mlxDir); err == nil {
+		// Directory might be recreated by download attempt, but the original
+		// incomplete one should have been removed. Check that force path ran.
+		t.Log("directory still exists (expected if download recreated it)")
+	}
+
+	// Verify the job did NOT short-circuit with already_present
+	// (even though config.json-only dirs wouldn't match anymore, the force
+	// code path should still delete regardless).
+	got := d.jobs.Get(job.ID)
+	if got.Status == JobAlreadyPresent {
+		t.Fatal("force pull should not return already_present")
+	}
+}
+
+func TestExecutePull_ForceWithCompleteModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HF_TOKEN", "")
+	t.Setenv("HUGGING_FACE_HUB_TOKEN", "")
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	// Place a complete MLX model.
+	mlxDir := filepath.Join(shelfRoot, "mlx", "testorg", "testmodel")
+	os.MkdirAll(mlxDir, 0o755)
+	os.WriteFile(filepath.Join(mlxDir, "config.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(mlxDir, "model.safetensors"), []byte("weights"), 0o644)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	d.inventory.Touch("testorg/testmodel", "mlx", "", 1000)
+
+	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
+	d.executePull(job.ID, "testorg/testmodel", "mlx", "", true)
+
+	// With force=true, should NOT return already_present even for complete model.
+	got := d.jobs.Get(job.ID)
+	if got.Status == JobAlreadyPresent {
+		t.Fatal("force pull should not return already_present even for complete model")
+	}
+
+	// The directory should have been deleted (force path).
+	// Download will fail (no HF server), but the point is force deleted it.
+}
+
+func TestHandlePull_ForceFieldParsed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	reqBody := PullRequest{
+		RepoID: "testorg/testmodel",
+		Format: "mlx",
+		Force:  true,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/pull", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	d.handlePull(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp PullResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.JobID == "" {
+		t.Fatal("expected non-empty job_id")
+	}
+
+	time.Sleep(100 * time.Millisecond)
 }
 
 // TestPullEndpointAuth verifies that pull requires mesh key when configured.

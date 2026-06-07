@@ -18,6 +18,7 @@ type PullRequest struct {
 	RepoID string `json:"repo_id"`
 	Format string `json:"format,omitempty"`
 	Quant  string `json:"quant,omitempty"`
+	Force  bool   `json:"force,omitempty"`
 }
 
 // PullResponse is returned by POST /v1/pull.
@@ -80,7 +81,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 	job := d.jobs.Create(req.RepoID, format, req.Quant, d.cfg.Name)
 	jobID := job.ID
 
-	go d.executePull(jobID, req.RepoID, format, req.Quant)
+	go d.executePull(jobID, req.RepoID, format, req.Quant, req.Force)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -94,9 +95,16 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 // executePull runs the download in the background.
 // It first checks if the model already exists locally, then checks if a peer
 // has the model (preferring LAN transfer), and finally falls back to HF download.
-func (d *Daemon) executePull(jobID, repoID, format, quant string) {
+func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool) {
 	d.jobs.SetDownloading(jobID)
-	log.Printf("pull: starting download of %s (format=%s, quant=%s) job=%s", repoID, format, quant, jobID)
+	log.Printf("pull: starting download of %s (format=%s, quant=%s, force=%v) job=%s", repoID, format, quant, force, jobID)
+
+	// Step 0: If --force, delete existing model before checking presence.
+	if force {
+		if err := d.deleteExistingModel(repoID, format, quant); err != nil {
+			log.Printf("pull: job %s — force delete failed: %v (proceeding anyway)", jobID, err)
+		}
+	}
 
 	// Step 1: Check if the model is already on the local shelf.
 	localCfg := &resolver.Config{
@@ -196,6 +204,42 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string) {
 
 	d.jobs.SetCompleted(jobID)
 	log.Printf("pull: job %s completed — %s at %s", jobID, repoID, safeStr(result.Path))
+}
+
+// deleteExistingModel removes a model from the local shelf and inventory.
+// Used by --force to ensure a fresh download.
+func (d *Daemon) deleteExistingModel(repoID, format, quant string) error {
+	var modelPath string
+	var err error
+
+	if format == "gguf" {
+		modelPath, err = resolver.ShelfPathGGUF(d.cfg.ShelfRoot, repoID, quant)
+	} else {
+		modelPath, err = resolver.ShelfPathSnapshot(d.cfg.ShelfRoot, repoID, format)
+	}
+	if err != nil {
+		return err
+	}
+
+	if _, statErr := os.Stat(modelPath); statErr != nil {
+		return nil // Nothing to delete.
+	}
+
+	log.Printf("pull: --force deleting existing model at %s", modelPath)
+	if err := os.RemoveAll(modelPath); err != nil {
+		return fmt.Errorf("removing %s: %w", modelPath, err)
+	}
+
+	// Remove from inventory.
+	d.inventory.Remove(repoID, format, quant)
+	release, lockErr := acquireInventoryLock()
+	if lockErr == nil {
+		if saveErr := d.inventory.Save(); saveErr != nil {
+			log.Printf("pull: force — inventory save error: %v", saveErr)
+		}
+		release()
+	}
+	return nil
 }
 
 // handleJobs returns the status of all jobs (or a single job by ID).
