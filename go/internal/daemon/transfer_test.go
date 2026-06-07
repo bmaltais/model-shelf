@@ -776,3 +776,83 @@ func TestTarredSize(t *testing.T) {
 		t.Errorf("tarredSize=%d, actual tar=%d", size, buf.Len())
 	}
 }
+
+func TestTransferSnapshot_UsesStagingDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Create a tar archive simulating a snapshot transfer.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	files := map[string][]byte{
+		"config.json":       []byte(`{"model_type": "qwen3"}`),
+		"model.safetensors": bytes.Repeat([]byte("M"), 500),
+	}
+	for name, data := range files {
+		hdr := &tar.Header{Name: name, Size: int64(len(data)), Mode: 0o644, Typeflag: tar.TypeReg}
+		tw.WriteHeader(hdr)
+		tw.Write(data)
+	}
+	tw.Close()
+
+	repoID := "mlx-community/Qwen3-0.6B-4bit"
+	format := "mlx"
+	jobID := d.jobs.Create(repoID, format, "", "test-node").ID
+
+	// Run the transfer.
+	err := d.transferSnapshot(jobID, &buf, int64(buf.Len()), repoID, format)
+	if err != nil {
+		t.Fatalf("transferSnapshot failed: %v", err)
+	}
+
+	// Verify the model is in the final path (not staging).
+	destDir := filepath.Join(shelfRoot, "mlx", "mlx-community", "Qwen3-0.6B-4bit")
+	if _, err := os.Stat(filepath.Join(destDir, "config.json")); err != nil {
+		t.Errorf("expected config.json in final path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "model.safetensors")); err != nil {
+		t.Errorf("expected model.safetensors in final path: %v", err)
+	}
+
+	// Verify no staging directory remains.
+	stagingDir := filepath.Join(shelfRoot, "mlx", "mlx-community", ".Qwen3-0.6B-4bit.transferring")
+	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
+		t.Errorf("staging directory should not exist after successful transfer")
+	}
+}
+
+func TestTransferSnapshot_StagingNotVisibleInInventory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	// Create a dot-prefixed directory simulating an in-progress transfer.
+	stagingDir := filepath.Join(shelfRoot, "mlx", "mlx-community", ".SomeModel.transferring")
+	os.MkdirAll(stagingDir, 0o755)
+	os.WriteFile(filepath.Join(stagingDir, "config.json"), []byte("{}"), 0o644)
+
+	inv := NewInventory()
+	if err := inv.ScanShelf(shelfRoot); err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	entries := inv.Entries()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries (staging should be invisible), got %d", len(entries))
+	}
+}

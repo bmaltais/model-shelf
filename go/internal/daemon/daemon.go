@@ -130,6 +130,7 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/nodes", d.handleNodes)
 	mux.HandleFunc("/v1/events", d.handleEvents)
 	mux.HandleFunc("/v1/inventory", d.handleInventory)
+	mux.HandleFunc("/v1/inventory/rescan", d.handleInventoryRescan)
 	mux.HandleFunc("/v1/pull", d.handlePull)
 	mux.HandleFunc("/v1/jobs", d.handleJobs)
 	mux.HandleFunc("/v1/models/", d.handleModelDownload)
@@ -316,6 +317,30 @@ func (d *Daemon) handleInventory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entries)
 }
 
+// handleInventoryRescan triggers an immediate shelf rescan and returns the
+// updated inventory. Used by the CLI after downloading a model to notify the
+// daemon without waiting for the periodic scan.
+func (d *Daemon) handleInventoryRescan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := &resolver.Config{ShelfRoot: d.cfg.ShelfRoot}
+	for _, root := range resolver.ListShelfCandidates(cfg) {
+		if err := d.inventory.ScanShelf(root); err != nil {
+			log.Printf("model-shelf daemon: rescan error (%s): %v", root, err)
+		}
+	}
+	if err := d.inventory.Save(); err != nil {
+		log.Printf("model-shelf daemon: failed to persist inventory after rescan: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 // GetInventory returns the daemon's inventory (used by resolve to touch models).
 func (d *Daemon) GetInventory() *Inventory {
 	return d.inventory
@@ -382,7 +407,7 @@ func looksLikeModelDir(path string) bool {
 
 // inventoryScanInterval controls how often the daemon re-scans the shelf
 // for models added externally (via resolve, manual placement, etc.).
-const inventoryScanInterval = 60 * time.Second
+const inventoryScanInterval = 30 * time.Second
 
 // startInventoryScanner launches a background goroutine that periodically
 // re-scans all shelf candidates and reconciles inventory.

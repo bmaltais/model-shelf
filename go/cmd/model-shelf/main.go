@@ -289,6 +289,9 @@ func cmdResolve(args []string) int {
 			}
 		}
 		daemon.TouchModel(repoID, result.Format, quant, size)
+
+		// Notify running daemon to rescan inventory immediately (best-effort).
+		notifyDaemonRescan()
 	}
 
 	return 0
@@ -319,6 +322,33 @@ func printResultPretty(repoID string, result *resolver.ResolveResult) {
 		path = *result.Path
 	}
 	fmt.Printf("  path        %s\n", path)
+}
+
+// notifyDaemonRescan sends a best-effort POST to the local daemon to trigger
+// an immediate inventory rescan. This ensures newly downloaded models appear
+// in inventory without waiting for the periodic scan interval.
+func notifyDaemonRescan() {
+	if !meshconfig.Exists() {
+		return
+	}
+	cfg, err := meshconfig.Load()
+	if err != nil {
+		return
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/inventory/rescan", cfg.Port)
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return
+	}
+	if cfg.MeshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return // daemon not running — no problem
+	}
+	resp.Body.Close()
 }
 
 // queryMeshPeers queries the local daemon for mesh peers that have the model.
