@@ -56,6 +56,51 @@ func TestHandleModelDownload_GGUF(t *testing.T) {
 	}
 }
 
+func TestHandleModelDownload_GGUF_ContentLength(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	ggufDir := filepath.Join(shelfRoot, "gguf", "Qwen", "Qwen3-14B-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	modelData := bytes.Repeat([]byte("x"), 4096)
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-14B-Q4_K_M.gguf"), modelData, 0o644)
+
+	cfg := &meshconfig.Config{
+		Name:      "source-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/gguf/Qwen/Qwen3-14B-GGUF/download?quant=Q4_K_M", nil)
+	w := httptest.NewRecorder()
+	d.handleModelDownload(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	cl := w.Header().Get("Content-Length")
+	if cl == "" {
+		t.Fatal("Content-Length header not set for GGUF response")
+	}
+	var contentLength int64
+	if _, err := fmt.Sscanf(cl, "%d", &contentLength); err != nil {
+		t.Fatalf("Content-Length is not a valid integer: %q", cl)
+	}
+	if contentLength != int64(w.Body.Len()) {
+		t.Errorf("Content-Length %d does not match actual body size %d", contentLength, w.Body.Len())
+	}
+	if contentLength != int64(len(modelData)) {
+		t.Errorf("Content-Length %d does not match model file size %d", contentLength, len(modelData))
+	}
+}
+
 func TestHandleModelDownload_MLX(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
