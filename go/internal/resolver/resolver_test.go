@@ -412,3 +412,131 @@ func TestLooksLikeModelDir_NonExistentPath(t *testing.T) {
 		t.Error("expected false for non-existent path")
 	}
 }
+
+func TestGGUFQuantLabel(t *testing.T) {
+	tests := []struct {
+		filename string
+		want     string
+	}{
+		{"Qwen3-0.6B-Q4_K_M.gguf", "Q4_K_M"},
+		{"Qwen3-0.6B-f16.gguf", "f16"},
+		{"Qwen3-0.6B-Q8_0.gguf", "Q8_0"},
+		{"model.Q4_0.gguf", "Q4_0"},
+		{"model.gguf", "model"},
+	}
+	for _, tc := range tests {
+		got := ggufQuantLabel(tc.filename)
+		if got != tc.want {
+			t.Errorf("ggufQuantLabel(%q) = %q, want %q", tc.filename, got, tc.want)
+		}
+	}
+}
+
+func TestGGUFSearchHint(t *testing.T) {
+	tests := []struct {
+		repoID string
+		want   string
+	}{
+		{"ggml-org/Qwen3-0.6B-GGUF", "Qwen3 0.6B"},
+		{"unsloth/Qwen3-1.7B-GGUF", "Qwen3 1.7B"},
+		{"TheBloke/Mistral-7B-v0.1-GGUF", "Mistral 7B v0.1"},
+	}
+	for _, tc := range tests {
+		got := ggufSearchHint(tc.repoID)
+		if got != tc.want {
+			t.Errorf("ggufSearchHint(%q) = %q, want %q", tc.repoID, got, tc.want)
+		}
+	}
+}
+
+func TestClarifyMissingGGUFQuant_ListsAvailableQuants(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Test server returning a HF API response with known .gguf siblings.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"siblings":[
+			{"rfilename":"Qwen3-0.6B-Q4_0.gguf"},
+			{"rfilename":"Qwen3-0.6B-Q8_0.gguf"},
+			{"rfilename":"Qwen3-0.6B-f16.gguf"},
+			{"rfilename":"README.md"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	err := clarifyMissingGGUFQuant("ggml-org/Qwen3-0.6B-GGUF", "Q4_K_M")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `"Q4_K_M"`) {
+		t.Errorf("expected quant name in error, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Q4_0") || !strings.Contains(msg, "Q8_0") || !strings.Contains(msg, "f16") {
+		t.Errorf("expected available quants listed, got: %s", msg)
+	}
+	if !strings.Contains(msg, "model-shelf find") {
+		t.Errorf("expected find hint in error, got: %s", msg)
+	}
+}
+
+func TestClarifyMissingGGUFQuant_APIUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Test server returning 503 — clarify function should return nil (fall back to original error).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	err := clarifyMissingGGUFQuant("ggml-org/Qwen3-0.6B-GGUF", "Q4_K_M")
+	if err != nil {
+		t.Errorf("expected nil when API unavailable, got: %v", err)
+	}
+}
+
+func TestResolveGGUF_404ShowsFriendlyQuantError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// First request (LookupGGUFFilename HF API call) returns siblings without Q4_K_M.
+	// Second request (download) returns 404.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/models/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"siblings":[
+				{"rfilename":"Qwen3-0.6B-Q4_0.gguf"},
+				{"rfilename":"Qwen3-0.6B-Q8_0.gguf"}
+			]}`))
+		} else {
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = &rewriteTransport{target: srv.URL, transport: origTransport}
+	defer func() { http.DefaultTransport = origTransport }()
+
+	shelfRoot := t.TempDir()
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+	cfg := &Config{ShelfRoot: shelfRoot, AllowDownloads: true}
+
+	_, err := ResolveModel(cfg, "ggml-org/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `"Q4_K_M"`) || !strings.Contains(msg, "not found") {
+		t.Errorf("expected friendly quant-not-found message, got: %s", msg)
+	}
+}
