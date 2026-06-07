@@ -30,6 +30,9 @@ func TestUnitContent(t *testing.T) {
 	if !strings.Contains(content, "Restart=on-failure") {
 		t.Error("unit file should restart on failure")
 	}
+	if !strings.Contains(content, "StartLimitIntervalSec=0") {
+		t.Error("unit file must contain StartLimitIntervalSec=0 to prevent systemd restart suppression")
+	}
 }
 
 func TestUnitDir(t *testing.T) {
@@ -81,3 +84,31 @@ func TestStatusString(t *testing.T) {
 		}
 	}
 }
+
+// TestRefreshUnitWritesFile verifies that refreshUnit writes an up-to-date unit
+// file to disk (including StartLimitIntervalSec=0). daemon-reload will fail in
+// the test environment since systemd is not present, but the file-write step
+// — which is the observable fix for #224 — completes before the daemon-reload
+// call, so we can assert on the file content regardless of the returned error.
+func TestRefreshUnitWritesFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	const exePath = "/usr/local/bin/model-shelf"
+	// Ignore the error: daemon-reload is expected to fail without systemd.
+	_ = refreshUnit(exePath)
+
+	content, err := os.ReadFile(unitPath())
+	if err != nil {
+		t.Fatalf("unit file was not written: %v", err)
+	}
+
+	got := string(content)
+	if !strings.Contains(got, "StartLimitIntervalSec=0") {
+		t.Error("refreshed unit file must contain StartLimitIntervalSec=0")
+	}
+	if !strings.Contains(got, `ExecStart="`+exePath+`" daemon`) {
+		t.Errorf("refreshed unit file must contain correct ExecStart, got:\n%s", got)
+	}
+}
+

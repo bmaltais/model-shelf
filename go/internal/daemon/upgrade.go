@@ -14,6 +14,17 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/service"
 )
 
+// serviceRefreshUnit is a function variable so tests can stub out the
+// unit-file refresh without requiring a live systemd instance.
+var serviceRefreshUnit = service.RefreshUnit
+
+// daemonRestart triggers a service restart after a successful in-process
+// upgrade. It is a function variable so tests can substitute a no-op
+// instead of spawning a detached shell or calling os.Exit.
+// The real implementation is platform-specific (see upgrade_linux.go /
+// upgrade_notlinux.go).
+var daemonRestart func()
+
 // upgradeRequest is the body of POST /v1/upgrade.
 type upgradeRequest struct {
 	Version string `json:"version"`
@@ -116,9 +127,11 @@ func (d *Daemon) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 			log.Printf("model-shelf daemon: upgrade to v%s failed: %v", target, err)
 			return
 		}
-		log.Printf("model-shelf daemon: upgraded to v%s; restarting service", target)
-		if err := service.Restart(); err != nil {
-			log.Printf("model-shelf daemon: could not restart service after upgrade: %v", err)
+		log.Printf("model-shelf daemon: upgraded to v%s; refreshing unit and restarting service", target)
+		if err := serviceRefreshUnit(); err != nil {
+			log.Printf("model-shelf daemon: could not refresh unit file: %v", err)
+			// non-fatal: proceed with restart so the daemon comes back up
 		}
+		daemonRestart()
 	}()
 }

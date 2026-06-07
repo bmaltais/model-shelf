@@ -48,19 +48,9 @@ WantedBy=default.target
 }
 
 func install(exePath string) error {
-	dir := unitDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating systemd user dir: %w", err)
-	}
-
-	content := unitContent(exePath)
-	if err := os.WriteFile(unitPath(), []byte(content), 0o644); err != nil {
-		return fmt.Errorf("writing unit file: %w", err)
-	}
-
-	// Reload systemd to pick up the new unit.
-	if err := systemctl("daemon-reload"); err != nil {
-		return fmt.Errorf("daemon-reload: %w", err)
+	// Write the unit file and reload systemd (shared with RefreshUnit).
+	if err := refreshUnit(exePath); err != nil {
+		return err
 	}
 
 	// Enable for auto-start on boot.
@@ -92,6 +82,23 @@ func uninstall() error {
 	// Reload.
 	_ = systemctl("daemon-reload")
 
+	return nil
+}
+
+// refreshUnit rewrites the unit file with current content and runs
+// daemon-reload without changing the service's running state.
+func refreshUnit(exePath string) error {
+	dir := unitDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating systemd user dir: %w", err)
+	}
+	content := unitContent(exePath)
+	if err := os.WriteFile(unitPath(), []byte(content), 0o644); err != nil {
+		return fmt.Errorf("writing unit file: %w", err)
+	}
+	if err := systemctl("daemon-reload"); err != nil {
+		return fmt.Errorf("daemon-reload: %w", err)
+	}
 	return nil
 }
 

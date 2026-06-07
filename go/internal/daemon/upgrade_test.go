@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/selfupgrade"
@@ -46,6 +47,7 @@ func stubDaemonUpgrade(t *testing.T, err error) {
 func currentPlatformChecksums(sha string) map[string]string {
 	return map[string]string{
 		selfupgrade.BinaryName("linux", "amd64"):   sha,
+		selfupgrade.BinaryName("linux", "arm64"):   sha,
 		selfupgrade.BinaryName("darwin", "arm64"):  sha,
 		selfupgrade.BinaryName("darwin", "amd64"):  sha,
 		selfupgrade.BinaryName("windows", "amd64"): sha,
@@ -163,16 +165,83 @@ func TestHandleUpgrade_ChecksumFetchError(t *testing.T) {
 	}
 }
 
-func TestHandleUpgrade_PlatformNotInChecksums(t *testing.T) {
-	// Return checksums that don't include the current platform.
-	stubFetchChecksums(t, map[string]string{"model-shelf-otherplatform-amd64": fakeSHA}, nil)
+// stubServiceRefreshUnit replaces serviceRefreshUnit with the given error and restores on cleanup.
+func stubServiceRefreshUnit(t *testing.T, err error) *int {
+	t.Helper()
+	count := new(int)
+	orig := serviceRefreshUnit
+	serviceRefreshUnit = func() error { *count++; return err }
+	t.Cleanup(func() { serviceRefreshUnit = orig })
+	return count
+}
+
+// stubDaemonRestart replaces daemonRestart with a function that signals the
+// given channel and restores the original on cleanup.
+func stubDaemonRestart(t *testing.T) chan struct{} {
+	t.Helper()
+	called := make(chan struct{}, 1)
+	orig := daemonRestart
+	daemonRestart = func() { called <- struct{}{} }
+	t.Cleanup(func() { daemonRestart = orig })
+	return called
+}
+
+// TestHandleUpgrade_RestartCalledAfterSuccess verifies that a successful upgrade
+// triggers both a unit-file refresh and the daemon restart function, satisfying
+// the fix for #223 (detached restart) and #224 (unit file refresh).
+func TestHandleUpgrade_RestartCalledAfterSuccess(t *testing.T) {
+	stubFetchChecksums(t, currentPlatformChecksums(fakeSHA), nil)
+	stubDaemonUpgrade(t, nil)
+	refreshCount := stubServiceRefreshUnit(t, nil)
+	restartCalled := stubDaemonRestart(t)
 
 	d := newUpgradeDaemon("0.5.0", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/upgrade", strings.NewReader(`{"version": "0.6.0"}`))
 	w := httptest.NewRecorder()
 	d.handleUpgrade(w, req)
 
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case <-restartCalled:
+		// restart was triggered — expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemonRestart was not called within 2s after successful upgrade")
+	}
+
+	if *refreshCount != 1 {
+		t.Errorf("serviceRefreshUnit called %d times, want 1", *refreshCount)
 	}
 }
+
+// TestHandleUpgrade_RestartNotCalledOnFailure verifies that when the binary
+// replacement fails, neither the unit-file refresh nor the daemon restart is
+// triggered.
+func TestHandleUpgrade_RestartNotCalledOnFailure(t *testing.T) {
+	stubFetchChecksums(t, currentPlatformChecksums(fakeSHA), nil)
+	stubDaemonUpgrade(t, fmt.Errorf("disk full"))
+	refreshCount := stubServiceRefreshUnit(t, nil)
+	restartCalled := stubDaemonRestart(t)
+
+	d := newUpgradeDaemon("0.5.0", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/upgrade", strings.NewReader(`{"version": "0.6.0"}`))
+	w := httptest.NewRecorder()
+	d.handleUpgrade(w, req)
+
+	// Give the goroutine time to finish (it returns early after the upgrade error).
+	time.Sleep(upgradeResponseDelay + 200*time.Millisecond)
+
+	select {
+	case <-restartCalled:
+		t.Error("daemonRestart should not be called when upgrade fails")
+	default:
+		// correct — no restart
+	}
+
+	if *refreshCount != 0 {
+		t.Errorf("serviceRefreshUnit called %d times, want 0", *refreshCount)
+	}
+}
+

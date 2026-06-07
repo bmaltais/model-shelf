@@ -56,6 +56,18 @@ func Restart() error {
 	return start()
 }
 
+// RefreshUnit rewrites the platform service unit file with the current
+// template content and signals the service manager to reload its
+// configuration — without starting or stopping the service.
+// On platforms that do not use file-based units this is a no-op.
+func RefreshUnit() error {
+	exe, err := executablePath()
+	if err != nil {
+		return fmt.Errorf("cannot determine executable path: %w", err)
+	}
+	return refreshUnit(exe)
+}
+
 // GetStatus returns the current service status.
 func GetStatus() (*Status, error) {
 	return getStatus()
