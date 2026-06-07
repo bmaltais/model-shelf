@@ -383,9 +383,27 @@ func TestCmdStatus_DaemonUnreachable(t *testing.T) {
 	config := "name = \"test\"\nport = 19999\nroles = [\"controller\"]\nshelf_root = \"/tmp/shelf\"\n"
 	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644)
 
+	// Capture stderr to verify clean error message.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
 	code := cmdStatus(nil)
+
+	w.Close()
+	os.Stderr = oldStderr
+	var buf strings.Builder
+	io.Copy(&buf, r)
+	output := buf.String()
+
 	if code != 1 {
 		t.Fatalf("expected exit code 1 when daemon unreachable, got %d", code)
+	}
+	if !strings.Contains(output, "daemon not running") {
+		t.Errorf("expected 'daemon not running' in error, got: %s", output)
+	}
+	if strings.Contains(output, "127.0.0.1") || strings.Contains(output, "http://") {
+		t.Errorf("error must not expose raw URL or IP address, got: %s", output)
 	}
 }
 

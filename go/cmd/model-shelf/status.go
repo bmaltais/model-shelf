@@ -285,7 +285,7 @@ func httpGet(url string) ([]byte, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach daemon: %v", err)
+		return nil, fmt.Errorf("%s", errDaemonNotRunning)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
