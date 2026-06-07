@@ -144,6 +144,7 @@ func streamTarDirectory(w io.Writer, dir string) {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
 
+	buf := make([]byte, transferBufferSize)
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -173,7 +174,7 @@ func streamTarDirectory(w io.Writer, dir string) {
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(tw, f)
+		_, copyErr := io.CopyBuffer(tw, f, buf)
 		f.Close()
 		return copyErr
 	})
@@ -182,6 +183,12 @@ func streamTarDirectory(w io.Writer, dir string) {
 const (
 	// progressReportInterval is how often progress is reported to the job store (1MB).
 	progressReportInterval = 1024 * 1024
+
+	// transferBufferSize is the buffer size for peer-to-peer transfers (1MB).
+	// The default io.Copy buffer (32KB) causes excessive syscall overhead on
+	// fast LANs, making the first transfer ~60x slower than subsequent ones
+	// due to TCP slow-start amplification. (Fixes #139)
+	transferBufferSize = 1024 * 1024
 )
 
 // peerSource describes a mesh peer that has a model available for transfer.
@@ -269,7 +276,14 @@ func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format
 		req.Header.Set("Authorization", "Bearer "+d.cfg.MeshKey)
 	}
 
-	client := &http.Client{Timeout: 0} // No timeout for large transfers.
+	// Use a transport with larger read buffer to reduce syscall overhead on
+	// fast LANs — the default net/http transport uses 4KB reads which causes
+	// excessive context switches during large file transfers. (Fixes #139)
+	transport := &http.Transport{
+		ReadBufferSize:  transferBufferSize,
+		WriteBufferSize: transferBufferSize,
+	}
+	client := &http.Client{Timeout: 0, Transport: transport} // No timeout for large transfers.
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("connecting to peer %s: %w", peer.Name, err)
@@ -312,7 +326,8 @@ func (d *Daemon) transferGGUF(jobID string, body io.Reader, totalBytes int64, re
 
 	// Use progressReader to throttle progress updates (every 1MB).
 	pr := &progressReader{reader: body, jobID: jobID, total: totalBytes, jobs: d.jobs}
-	_, copyErr := io.Copy(f, pr)
+	buf := make([]byte, transferBufferSize)
+	_, copyErr := io.CopyBuffer(f, pr, buf)
 	if copyErr != nil {
 		f.Close()
 		os.Remove(partial)
@@ -347,6 +362,7 @@ func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64
 	// Track bytes read for progress.
 	pr := &progressReader{reader: body, jobID: jobID, total: totalBytes, jobs: d.jobs}
 	tr := tar.NewReader(pr)
+	buf := make([]byte, transferBufferSize) // Reuse buffer across all files in the archive.
 
 	for {
 		header, err := tr.Next()
@@ -383,7 +399,7 @@ func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64
 				os.RemoveAll(destDir)
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if _, err := io.CopyBuffer(f, tr, buf); err != nil {
 				f.Close()
 				os.RemoveAll(destDir)
 				return fmt.Errorf("extracting %s: %w", header.Name, err)

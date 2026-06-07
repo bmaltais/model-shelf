@@ -387,6 +387,13 @@ func (g *Gossip) pollPeers() {
 				nodes[i].DiskTotalGB = hr.DiskTotalGB
 				metricsChanged = true
 			}
+			// Update roles from health response so role changes propagate via
+			// gossip polling without requiring a full re-join. (Fixes #138)
+			if len(hr.Roles) > 0 && !rolesEqual(nodes[i].Roles, hr.Roles) {
+				log.Printf("gossip: node %q roles changed: %v → %v", nodes[i].Name, nodes[i].Roles, hr.Roles)
+				nodes[i].Roles = hr.Roles
+				metricsChanged = true
+			}
 			// Update GPU info from peer health response (including nil to clear stale data).
 			if hr.GPU != nodes[i].GPU {
 				gpuChanged := false
@@ -451,6 +458,7 @@ func (g *Gossip) pollPeers() {
 					g.nodes[j].UptimeSeconds = updated.UptimeSeconds
 					g.nodes[j].GPU = updated.GPU
 					g.nodes[j].LastSeen = updated.LastSeen
+					g.nodes[j].Roles = updated.Roles
 					break
 				}
 			}
@@ -474,6 +482,7 @@ func (g *Gossip) pollPeers() {
 // healthResult holds the outcome of a health check.
 type healthResult struct {
 	OK            bool
+	Roles         []string
 	DiskFreeGB    float64
 	DiskTotalGB   float64
 	UptimeSeconds float64
@@ -499,6 +508,7 @@ func (g *Gossip) checkHealth(node MeshNode) healthResult {
 		return healthResult{}
 	}
 	var hr struct {
+		Roles         []string `json:"roles"`
 		DiskFreeGB    float64  `json:"disk_free_gb"`
 		DiskTotalGB   float64  `json:"disk_total_gb"`
 		UptimeSeconds float64  `json:"uptime_seconds"`
@@ -507,7 +517,7 @@ func (g *Gossip) checkHealth(node MeshNode) healthResult {
 	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
 		return healthResult{OK: true}
 	}
-	return healthResult{OK: true, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds, GPU: hr.GPU}
+	return healthResult{OK: true, Roles: hr.Roles, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds, GPU: hr.GPU}
 }
 
 // fetchPeerJobs fetches jobs from a peer node and merges them into the local store.
@@ -591,4 +601,104 @@ func (g *Gossip) persistLocked() {
 	if err := SaveMeshState(nodes); err != nil {
 		log.Printf("gossip: failed to persist state: %v", err)
 	}
+}
+
+// rolesEqual returns true if two role slices contain the same roles (order-insensitive).
+func rolesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]bool, len(a))
+	for _, r := range a {
+		set[r] = true
+	}
+	for _, r := range b {
+		if !set[r] {
+			return false
+		}
+	}
+	return true
+}
+
+// BootstrapFromSeeds contacts seed nodes to fetch the full mesh state
+// and merges it into local gossip state. This ensures non-controller nodes
+// can always discover all mesh participants even if mesh.json is stale.
+// (Fixes #136)
+func (g *Gossip) BootstrapFromSeeds(seeds []string) {
+	if len(seeds) == 0 {
+		return
+	}
+
+	for _, seed := range seeds {
+		nodes, err := g.fetchNodesFromSeed(seed)
+		if err != nil {
+			log.Printf("gossip: seed bootstrap from %s failed: %v", seed, err)
+			continue
+		}
+		if len(nodes) == 0 {
+			continue
+		}
+
+		g.mu.Lock()
+		for _, remote := range nodes {
+			if remote.Name == g.self {
+				continue
+			}
+			// Merge: add or update nodes from seed response.
+			found := false
+			for i := range g.nodes {
+				if g.nodes[i].Name == remote.Name {
+					// Update address/port/roles from seed (authoritative).
+					g.nodes[i].Address = remote.Address
+					g.nodes[i].Port = remote.Port
+					g.nodes[i].Roles = remote.Roles
+					if remote.DiskFreeGB > 0 {
+						g.nodes[i].DiskFreeGB = remote.DiskFreeGB
+					}
+					if remote.DiskTotalGB > 0 {
+						g.nodes[i].DiskTotalGB = remote.DiskTotalGB
+					}
+					g.nodes[i].GPU = remote.GPU
+					g.nodes[i].Status = remote.Status
+					found = true
+					break
+				}
+			}
+			if !found {
+				g.nodes = append(g.nodes, remote)
+			}
+		}
+		g.nodes = deduplicateByAddress(g.nodes)
+		g.persistLocked()
+		g.mu.Unlock()
+
+		log.Printf("gossip: bootstrapped %d node(s) from seed %s", len(nodes), seed)
+		return // Success from one seed is enough.
+	}
+}
+
+// fetchNodesFromSeed queries a seed node's /v1/nodes endpoint.
+func (g *Gossip) fetchNodesFromSeed(seed string) ([]MeshNode, error) {
+	url := fmt.Sprintf("http://%s/v1/nodes", seed)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if g.meshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.meshKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("seed returned HTTP %d", resp.StatusCode)
+	}
+	var nodes []MeshNode
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }

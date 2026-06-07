@@ -224,8 +224,8 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 	}
 
 	// Step 2: Filter by VRAM capacity.
-	// Exception: nodes that already have the model on disk bypass the VRAM check —
-	// they can serve from disk even without sufficient VRAM (CPU inference).
+	// Only Executor nodes are considered. Nodes that already have the model on
+	// disk bypass the VRAM check (CPU inference), but NOT the role check.
 	var candidates []struct {
 		Node       MeshNode
 		HasModel   bool
