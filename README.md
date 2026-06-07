@@ -321,6 +321,29 @@ Flags:
 
 Exit codes: `0` on found/downloaded, `1` on missing (not found anywhere), `2` on missing locally but available on a mesh peer (actionable — run `pull`).
 
+#### Daemon API: remote upgrade
+
+The daemon exposes `POST /v1/upgrade` so a controller node can trigger a self-upgrade on any mesh node remotely. The endpoint is authenticated with the mesh key Bearer token.
+
+**Request:**
+```json
+POST /v1/upgrade
+Authorization: Bearer <mesh-key>
+
+{ "version": "0.6.0" }
+```
+
+**Responses:**
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| `202 Accepted` | `{"status": "accepted", "version": "0.6.0"}` | Upgrade accepted; node will download, verify, replace binary, and restart (~500 ms after response) |
+| `200 OK` | `{"status": "already_current"}` | Node is already running the requested version |
+| `401 Unauthorized` | `{"error": "unauthorized"}` | Missing or invalid mesh key |
+| `422 Unprocessable Entity` | `{"error": "..."}` | Checksums not available for this version/platform, or version not found |
+
+The binary is SHA256-verified against the published `checksums.txt` before replacement. A checksum mismatch leaves the existing binary untouched. The `.bak` backup is saved before the atomic replace.
+
 ### JSON output
 
 `model-shelf resolve --json` returns:

@@ -328,15 +328,18 @@ func Run(targetVersion, currentVersion string, yes, force bool, stdout, stderr i
 	return nil
 }
 
-// executablePath returns the real path of the running binary,
-// resolving any symlinks.
-func executablePath() (string, error) {
+// ExecutablePath returns the real path of the running binary,
+// resolving any symlinks. Exported so the daemon upgrade endpoint can use it.
+func ExecutablePath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
 	return filepath.EvalSymlinks(exe)
 }
+
+// executablePath is the internal alias kept for use within Run.
+func executablePath() (string, error) { return ExecutablePath() }
 
 // currentOrDev returns a display string for the current version.
 func currentOrDev(v string) string {
