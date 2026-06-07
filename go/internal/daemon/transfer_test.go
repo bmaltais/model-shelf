@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -647,5 +648,86 @@ func TestHandleModelDownload_UpdatesLastAccessed(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected inventory to be updated (last-accessed) on download serve")
+	}
+}
+
+func TestHandleModelDownload_MLX_ContentLength(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	mlxDir := filepath.Join(shelfRoot, "mlx", "mlx-community", "TestModel")
+	os.MkdirAll(mlxDir, 0o755)
+	configData := []byte(`{"model_type": "test"}`)
+	weightsData := []byte("fake-weights-data-123")
+	os.WriteFile(filepath.Join(mlxDir, "config.json"), configData, 0o644)
+	os.WriteFile(filepath.Join(mlxDir, "weights.safetensors"), weightsData, 0o644)
+
+	cfg := &meshconfig.Config{
+		Name:      "source-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/mlx/mlx-community/TestModel/download", nil)
+	w := httptest.NewRecorder()
+	d.handleModelDownload(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Content-Length must be set and match the actual body size.
+	cl := w.Header().Get("Content-Length")
+	if cl == "" {
+		t.Fatal("Content-Length header not set for MLX tar response")
+	}
+	var contentLength int64
+	if _, err := fmt.Sscanf(cl, "%d", &contentLength); err != nil {
+		t.Fatalf("Content-Length is not a valid integer: %q", cl)
+	}
+	if contentLength != int64(w.Body.Len()) {
+		t.Errorf("Content-Length %d does not match actual body size %d", contentLength, w.Body.Len())
+	}
+}
+
+func TestTarredSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.bin"), bytes.Repeat([]byte("x"), 1000), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.bin"), bytes.Repeat([]byte("y"), 512), 0o644)
+	os.WriteFile(filepath.Join(dir, "c.bin"), []byte("small"), 0o644)
+
+	size, err := tarredSize(dir)
+	if err != nil {
+		t.Fatalf("tarredSize error: %v", err)
+	}
+
+	// Write an actual tar archive and compare sizes.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	entries := []struct {
+		name string
+		data []byte
+	}{
+		{"a.bin", bytes.Repeat([]byte("x"), 1000)},
+		{"b.bin", bytes.Repeat([]byte("y"), 512)},
+		{"c.bin", []byte("small")},
+	}
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Size: int64(len(e.data)), Mode: 0o644, Typeflag: tar.TypeReg}
+		tw.WriteHeader(hdr)
+		tw.Write(e.data)
+	}
+	tw.Close()
+
+	if size != int64(buf.Len()) {
+		t.Errorf("tarredSize=%d, actual tar=%d", size, buf.Len())
 	}
 }

@@ -238,14 +238,17 @@ func cmdResolve(args []string) int {
 	if result.Status == "missing" {
 		meshPeers := queryMeshPeers(repoID, format, quant)
 		if len(meshPeers) > 0 {
-			if cfg.AllowDownloads {
-				// Attempt pull from a mesh peer via the local daemon.
+			if cfg.AllowDownloads && format == "gguf" {
+				// Inline pull only for GGUF (single-file, completes quickly).
+				// MLX/safetensors use a tar-stream transfer that can take significant
+				// time; use `model-shelf pull` for those to avoid blocking resolve.
 				fmt.Fprintf(os.Stderr, "resolve: attempting transfer from mesh peer...\n")
 				if peerResult := pullFromMeshPeer(repoID, format, quant, cfg.ShelfRoot); peerResult != nil {
 					result = peerResult
 				}
 			}
-			// If peer transfer didn't work (or downloads disabled), mark as mesh-available.
+			// When a peer has the model, report it as mesh-available and do not
+			// fall back to HF — the model already exists in the mesh.
 			if result.Status == "missing" {
 				result.Status = "missing_locally"
 				result.Source = "mesh"
@@ -254,8 +257,8 @@ func cmdResolve(args []string) int {
 		}
 	}
 
-	// If still missing and downloads are allowed, fall back to HF download.
-	if (result.Status == "missing" || result.Status == "missing_locally") && cfg.AllowDownloads {
+	// Fall back to HF only when no mesh peer has the model (status still "missing").
+	if result.Status == "missing" && cfg.AllowDownloads {
 		result, err = resolver.ResolveModel(cfg, repoID, format, quant)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
