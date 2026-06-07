@@ -294,6 +294,108 @@ func TestCmdInventory_OfflineNode(t *testing.T) {
 	}
 }
 
+func TestCmdInventory_OfflineStatusButReachable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	// Node has StatusOffline in gossip (first poll pending) but is actually reachable.
+	nodes := []daemon.MeshNode{
+		{Name: "local-node", Address: "REPLACE_LOCAL", Port: 0, Roles: []string{"store"}, Status: daemon.StatusOnline, LastSeen: &now},
+		{Name: "new-peer", Address: "REPLACE_PEER", Port: 0, Roles: []string{"store"}, Status: daemon.StatusOffline},
+	}
+
+	localInv := []daemon.InventoryEntry{
+		{RepoID: "org/model-a", Format: "gguf", Quant: "Q4_K_M", SizeBytes: 4_000_000_000, LastAccessed: now},
+	}
+	peerInv := []daemon.InventoryEntry{
+		{RepoID: "org/model-b", Format: "mlx", SizeBytes: 7_000_000_000, LastAccessed: now},
+	}
+
+	localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/inventory" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(localInv)
+		}
+	}))
+	defer localServer.Close()
+
+	// Peer server is running (reachable), even though gossip says offline.
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/inventory" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(peerInv)
+		}
+	}))
+	defer peerServer.Close()
+
+	localAddr, localPort := parseTestServerAddr(t, localServer.URL)
+	peerAddr, peerPort := parseTestServerAddr(t, peerServer.URL)
+	nodes[0].Address = localAddr
+	nodes[0].Port = localPort
+	nodes[1].Address = peerAddr
+	nodes[1].Port = peerPort
+
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonServer.Close()
+
+	daemonPort := strings.TrimPrefix(daemonServer.URL, "http://127.0.0.1:")
+	cfg := &meshconfig.Config{
+		Name:      "local-node",
+		Port:      mustAtoi(t, daemonPort),
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	oldOut := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	oldErr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	code := cmdInventory([]string{"--json"})
+
+	wOut.Close()
+	os.Stdout = oldOut
+	wErr.Close()
+	os.Stderr = oldErr
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var bufOut bytes.Buffer
+	bufOut.ReadFrom(rOut)
+	output := bufOut.String()
+
+	var bufErr bytes.Buffer
+	bufErr.ReadFrom(rErr)
+	stderrOutput := bufErr.String()
+
+	var got []InventoryRow
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, output)
+	}
+	// Both nodes' models should appear — peer is reachable despite offline gossip status.
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rows (peer reachable despite offline status), got %d: %s", len(got), output)
+	}
+	// No warning should appear since the request succeeded.
+	if strings.Contains(stderrOutput, "warning") {
+		t.Errorf("expected no warning for reachable peer, got: %q", stderrOutput)
+	}
+}
+
 func TestCmdInventory_Empty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

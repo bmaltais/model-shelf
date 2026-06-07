@@ -587,3 +587,111 @@ func TestCmdInit_ForceSameNameDoesNotSendLeave(t *testing.T) {
 		t.Errorf("did not expect leave event when name is unchanged, but one was received")
 	}
 }
+
+func TestCmdInit_ForceNewKeyWarnsPeers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// First init (controller) — creates a key file.
+	code := cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "ocilab1"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Delete the key file to simulate a missing key scenario.
+	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	os.Remove(keyPath)
+
+	// Write mesh state with a known peer.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "ocilab1", Address: "127.0.0.1", Port: 8844, Status: daemon.StatusOnline},
+		{Name: "mini1", Address: "mini1", Port: 8844, Status: daemon.StatusOnline},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o600)
+
+	// Capture stderr.
+	oldErr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	// Capture stdout to suppress it.
+	oldOut := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	code = cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "ocilab1", "--force"})
+
+	wErr.Close()
+	os.Stderr = oldErr
+	wOut.Close()
+	os.Stdout = oldOut
+	io.ReadAll(rOut)
+
+	stderrBytes, _ := io.ReadAll(rErr)
+	stderrOutput := string(stderrBytes)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstderr: %s", code, stderrOutput)
+	}
+
+	if !strings.Contains(stderrOutput, "warning") || !strings.Contains(stderrOutput, "peer") {
+		t.Errorf("expected peer-orphan warning on stderr, got: %q", stderrOutput)
+	}
+}
+
+func TestCmdInit_ForceNewKeyNoPeersNoWarn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+
+	// First init (controller) — creates a key file.
+	code := cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "ocilab1"})
+	if code != 0 {
+		t.Fatalf("first init failed with code %d", code)
+	}
+
+	// Delete the key file.
+	keyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	os.Remove(keyPath)
+
+	// No mesh state (no peers).
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "ocilab1", Address: "127.0.0.1", Port: 8844, Status: daemon.StatusOnline},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o600)
+
+	// Capture stderr.
+	oldErr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	oldOut := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	code = cmdInit([]string{"--role", "controller", "--shelf", shelfPath, "--name", "ocilab1", "--force"})
+
+	wErr.Close()
+	os.Stderr = oldErr
+	wOut.Close()
+	os.Stdout = oldOut
+	io.ReadAll(rOut)
+
+	stderrBytes, _ := io.ReadAll(rErr)
+	stderrOutput := string(stderrBytes)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\nstderr: %s", code, stderrOutput)
+	}
+
+	if strings.Contains(stderrOutput, "warning") && strings.Contains(stderrOutput, "peer") {
+		t.Errorf("expected no peer-orphan warning when no peers exist, got: %q", stderrOutput)
+	}
+}
