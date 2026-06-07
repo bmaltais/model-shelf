@@ -25,9 +25,6 @@ func cmdRole(args []string) int {
 		fmt.Println("  remove <roles>  Remove roles from the current set")
 		fmt.Println()
 		fmt.Println("Roles are comma-separated: controller,store,executor")
-		if len(args) < 1 {
-			return 1
-		}
 		return 0
 	}
 

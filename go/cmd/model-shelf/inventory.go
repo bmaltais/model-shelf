@@ -40,19 +40,19 @@ func cmdInventory(args []string) int {
 
 	// Load config to determine daemon port and mesh key.
 	if !meshconfig.Exists() {
-		fmt.Fprintf(os.Stderr, "error: not part of a mesh — run `model-shelf init` and `model-shelf join`\n")
+		emitError(jsonOutput, "not part of a mesh — run `model-shelf init` and `model-shelf join`")
 		return 1
 	}
 	cfg, err := meshconfig.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
 	// Get node list from local daemon.
 	nodes, err := fetchNodes(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 

@@ -192,6 +192,46 @@ func TestCmdNodes_NoConfig(t *testing.T) {
 	}
 }
 
+func TestCmdNodes_JSON_DaemonNotRunning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test",
+		Port:      19998,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdNodes([]string{"--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	var errResp map[string]string
+	if err := json.Unmarshal([]byte(output), &errResp); err != nil {
+		t.Fatalf("expected JSON error output, got: %s", output)
+	}
+	if errResp["error"] == "" {
+		t.Errorf("expected non-empty 'error' field, got: %v", errResp)
+	}
+}
+
 func TestCmdNodes_JSON_AlwaysIncludesDiskFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

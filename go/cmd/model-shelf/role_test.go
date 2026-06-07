@@ -218,6 +218,14 @@ func TestCmdRole_Help(t *testing.T) {
 	}
 }
 
+func TestCmdRole_NoArgs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	code := cmdRole([]string{})
+	if code != 0 {
+		t.Fatalf("expected exit 0 for no-arg help display, got %d", code)
+	}
+}
+
 func TestCmdRole_SubcommandHelp(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, action := range []string{"set", "add", "remove"} {

@@ -46,10 +46,11 @@ func cmdStatus(args []string) int {
 }
 
 func statusSingleJob(addr, jobID string, flags map[string]string) int {
+	jsonOutput := flags["json"] == "true"
 	url := fmt.Sprintf("http://%s/v1/jobs?id=%s", addr, jobID)
 	body, err := httpGet(url)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
@@ -115,19 +116,20 @@ func statusAllJobs(addr string, flags map[string]string) int {
 		useMesh = shouldDefaultMesh()
 	}
 
+	jsonOutput := flags["json"] == "true"
 	url := fmt.Sprintf("http://%s/v1/jobs", addr)
 	if useMesh {
 		url += "?mesh=true"
 	}
 	body, err := httpGet(url)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
 	var jobs []daemon.Job
 	if err := json.Unmarshal(body, &jobs); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid response: %v\n", err)
+		emitError(jsonOutput, "invalid response from daemon")
 		return 1
 	}
 
