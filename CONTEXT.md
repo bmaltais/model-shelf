@@ -51,3 +51,7 @@ _Avoid_: token, password, API key
 **Shelf**:
 The directory tree on a node where models are stored, organized by format/publisher/repo.
 _Avoid_: cache, library, vault
+
+**Upgrade**:
+Replacing the model-shelf binary on one or more nodes with a specified or latest release version. Initiated from the controller; each node self-fetches and restarts.
+_Avoid_: update, install, deploy
