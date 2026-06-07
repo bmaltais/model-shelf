@@ -544,6 +544,10 @@ func (d *Daemon) updateInventoryAfterTransfer(jobID, repoID, format, quant strin
 		log.Printf("transfer: job %s inventory save error: %v", jobID, err)
 	}
 
-	// Update progress with final size.
-	d.jobs.SetProgress(jobID, size, size)
+	// Mark bytes_downloaded as complete (matching bytes_total from Content-Length).
+	// Don't overwrite bytes_total — it was set from the wire size at transfer start
+	// and must remain consistent throughout the job lifecycle (#156).
+	if j := d.jobs.Get(jobID); j != nil && j.BytesTotal > 0 {
+		d.jobs.SetProgress(jobID, j.BytesTotal, j.BytesTotal)
+	}
 }

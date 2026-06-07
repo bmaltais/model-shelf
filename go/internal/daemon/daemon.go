@@ -158,6 +158,9 @@ func (d *Daemon) Run() error {
 	// Start periodic inventory shelf scan (picks up models added externally).
 	d.startInventoryScanner(ctx)
 
+	// Start watchdog to detect and fail stalled jobs.
+	d.startWatchdog(ctx.Done())
+
 	go func() {
 		<-ctx.Done()
 		log.Println("model-shelf daemon: shutting down...")

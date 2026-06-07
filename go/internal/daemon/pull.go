@@ -240,7 +240,8 @@ func (d *Daemon) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobs := d.jobs.All()
+	// Local-only: return jobs created on this node (excludes gossip-replicated jobs).
+	jobs := d.jobs.LocalAll()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(jobs)
 }
