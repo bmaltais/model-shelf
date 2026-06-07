@@ -34,6 +34,7 @@ func unitContent(exePath string) string {
 Description=Model Shelf Daemon
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

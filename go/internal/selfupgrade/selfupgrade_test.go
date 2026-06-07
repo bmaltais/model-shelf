@@ -3,6 +3,7 @@ package selfupgrade
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -194,8 +195,8 @@ func TestRun_alreadyCurrent(t *testing.T) {
 	var out strings.Builder
 	// No network calls should be made — same version, no --force.
 	err := Run("1.2.3", "1.2.3", false, false, &out, &out, strings.NewReader(""))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrAlreadyCurrent) {
+		t.Fatalf("expected ErrAlreadyCurrent, got: %v", err)
 	}
 	if !strings.Contains(out.String(), "nothing to do") {
 		t.Errorf("expected 'nothing to do' message, got: %q", out.String())
@@ -205,8 +206,8 @@ func TestRun_alreadyCurrent(t *testing.T) {
 func TestRun_alreadyCurrent_withVPrefix(t *testing.T) {
 	var out strings.Builder
 	err := Run("v1.2.3", "v1.2.3", false, false, &out, &out, strings.NewReader(""))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrAlreadyCurrent) {
+		t.Fatalf("expected ErrAlreadyCurrent, got: %v", err)
 	}
 	if !strings.Contains(out.String(), "nothing to do") {
 		t.Errorf("expected 'nothing to do' message, got: %q", out.String())
