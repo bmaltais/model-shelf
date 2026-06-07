@@ -1,0 +1,516 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/alexziskind1/model-shelf/internal/daemon"
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
+)
+
+func TestIsControllerNode(t *testing.T) {
+	cases := []struct {
+		roles []string
+		want  bool
+	}{
+		{[]string{"controller"}, true},
+		{[]string{"controller", "store"}, true},
+		{[]string{"store", "executor"}, false},
+		{[]string{}, false},
+	}
+	for _, c := range cases {
+		cfg := &meshconfig.Config{Roles: c.roles}
+		if got := isControllerNode(cfg); got != c.want {
+			t.Errorf("isControllerNode(%v) = %v, want %v", c.roles, got, c.want)
+		}
+	}
+}
+
+func TestNodeVersion(t *testing.T) {
+	if nodeVersion("") != "unknown" {
+		t.Error("empty version should return 'unknown'")
+	}
+	if nodeVersion("1.2.3") != "1.2.3" {
+		t.Error("non-empty version should be returned unchanged")
+	}
+}
+
+func TestFetchPeerVersion_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"version": "1.2.3"})
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	ver, ok := fetchPeerVersion(srv.URL, "", client)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ver != "1.2.3" {
+		t.Errorf("expected version 1.2.3, got %s", ver)
+	}
+}
+
+func TestFetchPeerVersion_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	_, ok := fetchPeerVersion(srv.URL, "", client)
+	if ok {
+		t.Fatal("expected ok=false for non-200 response")
+	}
+}
+
+func TestFetchPeerVersion_ConnectionRefused(t *testing.T) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	_, ok := fetchPeerVersion("http://127.0.0.1:1", "", client)
+	if ok {
+		t.Fatal("expected ok=false for connection refused")
+	}
+}
+
+func TestUpgradePeerNode_AlreadyCurrent(t *testing.T) {
+	peer := daemon.MeshNode{Name: "node-a", Address: "127.0.0.1"}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost {
+			json.NewEncoder(w).Encode(map[string]string{"status": "already_current"})
+		}
+	}))
+	defer srv.Close()
+
+	port := parsePort(t, srv.URL)
+	peer.Port = port
+
+	r := upgradePeerNode(peer, "1.0.0", "")
+	if r.Status != "upgraded" {
+		t.Errorf("expected 'upgraded' for already_current, got %q", r.Status)
+	}
+}
+
+func TestUpgradePeerNode_UpgradeAndPollSuccess(t *testing.T) {
+	peer := daemon.MeshNode{Name: "node-b", Address: "127.0.0.1"}
+
+	// Peer reports old version on first health poll, new version on second.
+	pollCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		case r.URL.Path == "/v1/health" && r.Method == http.MethodGet:
+			pollCount++
+			ver := "0.9.0"
+			if pollCount >= 2 {
+				ver = "1.0.0"
+			}
+			json.NewEncoder(w).Encode(map[string]string{"version": ver})
+		}
+	}))
+	defer srv.Close()
+
+	peer.Port = parsePort(t, srv.URL)
+
+	r := upgradePeerNode(peer, "1.0.0", "")
+	if r.Status != "upgraded" {
+		t.Errorf("expected 'upgraded', got %q (reason: %s)", r.Status, r.Reason)
+	}
+}
+
+func TestUpgradePeerNode_ConnectionRefused(t *testing.T) {
+	peer := daemon.MeshNode{Name: "node-c", Address: "127.0.0.1", Port: 1}
+	r := upgradePeerNode(peer, "1.0.0", "")
+	if r.Status != "failed" {
+		t.Errorf("expected 'failed' for connection refused, got %q", r.Status)
+	}
+	if r.Name != "node-c" {
+		t.Errorf("expected name 'node-c', got %q", r.Name)
+	}
+}
+
+func TestRunMeshUpgrade_JSONOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Override self-upgrade to avoid real network calls.
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return nil
+	}
+
+	// Fake peer that accepts upgrade and returns new version on health poll.
+	pollCount := 0
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		case r.URL.Path == "/v1/health":
+			pollCount++
+			ver := "0.5.0"
+			if pollCount >= 1 {
+				ver = "1.0.0"
+			}
+			json.NewEncoder(w).Encode(map[string]string{"version": ver})
+		}
+	}))
+	defer peerSrv.Close()
+
+	peerAddr := "127.0.0.1"
+	peerPort := parsePort(t, peerSrv.URL)
+
+	// Fake local daemon returning two nodes: self (controller) + one online peer + one offline peer.
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: peerAddr, Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline, Version: "0.5.0"},
+		{Name: "peer-online", Address: peerAddr, Port: peerPort, Roles: []string{"store"}, Status: daemon.StatusOnline, Version: "0.5.0"},
+		{Name: "peer-offline", Address: peerAddr, Port: 9999, Roles: []string{"executor"}, Status: daemon.StatusOffline, Version: "0.4.0"},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	// Capture stdout.
+	oldOut := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := runMeshUpgrade(cfg, "1.0.0", true, false, true)
+
+	w.Close()
+	os.Stdout = oldOut
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	var result meshUpgradeOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, out)
+	}
+
+	if result.TargetVersion != "1.0.0" {
+		t.Errorf("expected target_version 1.0.0, got %s", result.TargetVersion)
+	}
+	if len(result.Nodes) != 3 {
+		t.Fatalf("expected 3 nodes in result, got %d: %+v", len(result.Nodes), result.Nodes)
+	}
+
+	// Find each node result by name.
+	byName := make(map[string]nodeUpgradeResult, len(result.Nodes))
+	for _, n := range result.Nodes {
+		byName[n.Name] = n
+	}
+
+	if byName["peer-online"].Status != "upgraded" {
+		t.Errorf("peer-online: expected 'upgraded', got %q", byName["peer-online"].Status)
+	}
+	if byName["peer-offline"].Status != "skipped" {
+		t.Errorf("peer-offline: expected 'skipped', got %q", byName["peer-offline"].Status)
+	}
+	if byName["peer-offline"].Reason != "offline" {
+		t.Errorf("peer-offline: expected reason 'offline', got %q", byName["peer-offline"].Reason)
+	}
+	if byName["ctrl"].Status != "upgraded" {
+		t.Errorf("ctrl: expected 'upgraded', got %q", byName["ctrl"].Status)
+	}
+}
+
+func TestRunMeshUpgrade_ControllerSelfUpgradesLast(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var upgradeOrder []string
+	var orderMu = make(chan struct{}, 1)
+	orderMu <- struct{}{}
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+
+	// Fake peer: upgrade takes 50ms before health returns new version.
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost:
+			<-orderMu
+			upgradeOrder = append(upgradeOrder, "peer")
+			orderMu <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		case r.URL.Path == "/v1/health":
+			json.NewEncoder(w).Encode(map[string]string{"version": "2.0.0"})
+		}
+	}))
+	defer peerSrv.Close()
+
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		<-orderMu
+		upgradeOrder = append(upgradeOrder, "self")
+		orderMu <- struct{}{}
+		return nil
+	}
+
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline},
+		{Name: "peer1", Address: "127.0.0.1", Port: parsePort(t, peerSrv.URL), Roles: []string{"store"}, Status: daemon.StatusOnline},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	runMeshUpgrade(cfg, "2.0.0", true, false, true)
+
+	if len(upgradeOrder) < 2 {
+		t.Fatalf("expected at least 2 upgrade events, got %v", upgradeOrder)
+	}
+	last := upgradeOrder[len(upgradeOrder)-1]
+	if last != "self" {
+		t.Errorf("controller self-upgrade should be last, got order: %v", upgradeOrder)
+	}
+}
+
+func TestRunMeshUpgrade_NoPeers_StillSelfUpgrades(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	selfCalled := false
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		selfCalled = true
+		return nil
+	}
+
+	// Daemon returns only self (no peers).
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	code := runMeshUpgrade(cfg, "1.0.0", true, false, true)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !selfCalled {
+		t.Error("expected self-upgrade to be called even with no peers")
+	}
+}
+
+func TestRunMeshUpgrade_OfflinePeerSkipped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return nil
+	}
+
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline},
+		{Name: "gone", Address: "127.0.0.1", Port: 9, Roles: []string{"store"}, Status: daemon.StatusOffline},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	oldOut := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := runMeshUpgrade(cfg, "1.0.0", true, false, true)
+
+	w.Close()
+	os.Stdout = oldOut
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	var result meshUpgradeOutput
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	byName := make(map[string]nodeUpgradeResult)
+	for _, n := range result.Nodes {
+		byName[n.Name] = n
+	}
+	if byName["gone"].Status != "skipped" {
+		t.Errorf("offline node should be skipped, got %q", byName["gone"].Status)
+	}
+}
+
+func TestCmdUpgrade_StandaloneWhenNoMesh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// No mesh config → standalone path. Stub selfupgrade to avoid real calls.
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return fmt.Errorf("stub: would do standalone upgrade to %s", targetVersion)
+	}
+
+	code := cmdUpgrade([]string{"--version", "1.0.0", "--yes"})
+	// We expect exit 1 because the stub returns an error (proving standalone path was taken).
+	if code != 1 {
+		t.Fatalf("expected exit 1 from stub error, got %d", code)
+	}
+}
+
+func TestCmdUpgrade_StandaloneWhenNotController(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "worker",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return fmt.Errorf("stub: standalone upgrade to %s", targetVersion)
+	}
+
+	code := cmdUpgrade([]string{"--version", "1.0.0", "--yes"})
+	// Expects exit 1 because stub returns error, confirming standalone path.
+	if code != 1 {
+		t.Fatalf("expected exit 1 from stub error, got %d", code)
+	}
+}
+
+func TestUpgradePeerNode_MeshKeyForwarded(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		// Health poll: always return target version.
+	}))
+	defer srv.Close()
+
+	// Start a health server that returns the target version immediately.
+	peer := daemon.MeshNode{Name: "auth-peer", Address: "127.0.0.1", Port: parsePort(t, srv.URL)}
+
+	// Create a second server for health polls that returns the target version.
+	healthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"version": "3.0.0"})
+	}))
+	defer healthSrv.Close()
+
+	// Use same server for both upgrade and health by overriding the peer port.
+	// Since upgradePeerNode uses peer.Address:peer.Port for both /v1/upgrade and /v1/health,
+	// we need a single server handling both paths.
+	pollCount := 0
+	combinedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		switch {
+		case r.URL.Path == "/v1/upgrade":
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		case r.URL.Path == "/v1/health":
+			pollCount++
+			json.NewEncoder(w).Encode(map[string]string{"version": "3.0.0"})
+		}
+	}))
+	defer combinedSrv.Close()
+
+	peer.Port = parsePort(t, combinedSrv.URL)
+	_ = time.Now() // avoid unused import
+	r := upgradePeerNode(peer, "3.0.0", "secret-key")
+
+	if r.Status != "upgraded" {
+		t.Errorf("expected upgraded, got %q", r.Status)
+	}
+	if gotAuth != "Bearer secret-key" {
+		t.Errorf("expected Authorization header 'Bearer secret-key', got %q", gotAuth)
+	}
+}
+
+func parsePort(t *testing.T, rawURL string) int {
+	t.Helper()
+	// rawURL is like "http://127.0.0.1:PORT"
+	portStr := rawURL[strings.LastIndex(rawURL, ":")+1:]
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("parsePort(%q): %v", rawURL, err)
+	}
+	return port
+}
