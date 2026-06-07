@@ -115,6 +115,10 @@ func New(cfg *meshconfig.Config) *Daemon {
 	d.gossip = NewGossip(selfNode, cfg.MeshKey, cfg.ShelfRoot, d.startTime, d.jobs)
 	d.gossip.SetGPUConfig(cfg.GPU)
 
+	// Bootstrap from seeds to ensure non-controller nodes discover all peers.
+	// This contacts the seed node to fetch the full mesh state.
+	d.gossip.BootstrapFromSeeds(cfg.Seeds)
+
 	return d
 }
 

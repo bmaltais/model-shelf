@@ -254,6 +254,34 @@ func TestSelectExecutor_CPUOnlyNodeWithoutModel(t *testing.T) {
 	}
 }
 
+func TestSelectExecutor_NonExecutorWithModelOnDisk(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// A store-only node has the model on disk but should NOT be selected
+	// because it doesn't have the executor role. (Fixes #138)
+	nodes := []MeshNode{
+		{Name: "store-only", Roles: []string{"store"}, Status: StatusOnline,
+			DiskFreeGB: 500, GPU: nil},
+		{Name: "executor-node", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 100,
+			GPU:        &GPUInfo{Name: "RTX 4090", VRAMTotalGB: 24.0, VRAMAvailableGB: 20.0}},
+	}
+
+	// store-only has the model on disk.
+	inventoryByNode := map[string][]InventoryEntry{
+		"store-only": {{RepoID: "unsloth/Qwen3-0.6B-GGUF", Format: "gguf", Quant: "Q4_K_M", SizeBytes: 400000000}},
+	}
+
+	result, err := SelectExecutor(nodes, 0.4, "unsloth/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M", inventoryByNode, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should select executor-node, not store-only (even though store-only has the model).
+	if result.Target != "executor-node" {
+		t.Errorf("expected executor-node (store-only has no executor role), got %s", result.Target)
+	}
+}
+
 func TestHasRole(t *testing.T) {
 	tests := []struct {
 		roles []string

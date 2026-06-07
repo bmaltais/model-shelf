@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/resolver"
@@ -32,8 +33,17 @@ func FindModels(query string, format string, limit int) ([]FindResult, error) {
 		fetchLimit = limit * 5
 	}
 
+	// When a format filter is specified, append the format keyword to the search
+	// query so the HF API returns format-relevant results. Without this, the API
+	// returns results matching only the text query (e.g. safetensors models) which
+	// are then filtered out client-side, yielding empty results.
+	searchQuery := query
+	if format != "" && !containsFormatKeyword(query, format) {
+		searchQuery = query + " " + format
+	}
+
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models?search=%s&limit=%d&sort=downloads&direction=-1",
-		url.QueryEscape(query), fetchLimit)
+		url.QueryEscape(searchQuery), fetchLimit)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -78,4 +88,19 @@ func FindModels(query string, format string, limit int) ([]FindResult, error) {
 		}
 	}
 	return out, nil
+}
+
+// containsFormatKeyword checks if the query already contains a keyword
+// associated with the given format, making an additional append redundant.
+func containsFormatKeyword(query, format string) bool {
+	lower := strings.ToLower(query)
+	switch format {
+	case "mlx":
+		return strings.Contains(lower, "mlx")
+	case "gguf":
+		return strings.Contains(lower, "gguf")
+	case "safetensors":
+		return strings.Contains(lower, "safetensors")
+	}
+	return false
 }

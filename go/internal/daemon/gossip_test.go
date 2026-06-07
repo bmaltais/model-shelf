@@ -655,3 +655,251 @@ func TestPollPeers_UpdatesDiskFreeGB(t *testing.T) {
 	}
 	t.Error("peer node not found")
 }
+
+func TestPollPeers_UpdatesRoles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Start a mock peer that reports changed roles in health response.
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Node was "executor,store" but now reports only "store".
+		w.Write([]byte(`{"name":"exec-node","roles":["store"],"port":8844,"disk_total_gb":500.0,"disk_free_gb":200.0,"uptime_seconds":100}`))
+	}))
+	defer mockServer.Close()
+
+	host, port := parseHostPort(t, mockServer)
+
+	selfNode := MeshNode{
+		Name:    "controller",
+		Address: "10.0.0.1",
+		Port:    8844,
+		Roles:   []string{"controller"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
+
+	// Add peer with executor+store roles.
+	g.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "exec-node", Address: host, Port: port, Roles: []string{"executor", "store"}, Status: StatusOnline},
+	})
+
+	// Verify initial roles.
+	nodes := g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "exec-node" {
+			if !HasRole(n.Roles, "executor") {
+				t.Fatal("expected executor role initially")
+			}
+		}
+	}
+
+	// Poll — the mock server reports only "store" role.
+	g.pollPeers()
+
+	nodes = g.Nodes()
+	for _, n := range nodes {
+		if n.Name == "exec-node" {
+			if HasRole(n.Roles, "executor") {
+				t.Error("expected executor role to be removed after poll")
+			}
+			if !HasRole(n.Roles, "store") {
+				t.Error("expected store role to remain")
+			}
+			return
+		}
+	}
+	t.Error("exec-node not found")
+}
+
+func TestBootstrapFromSeeds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Start a mock seed that returns a full node list.
+	seedNodes := []MeshNode{
+		{Name: "controller", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller", "store"}, Status: StatusOnline, DiskFreeGB: 100, DiskTotalGB: 500},
+		{Name: "store-1", Address: "10.0.0.2", Port: 8844, Roles: []string{"store"}, Status: StatusOnline, DiskFreeGB: 200, DiskTotalGB: 1000},
+	}
+	seedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(seedNodes)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer seedServer.Close()
+
+	seedAddr := seedServer.Listener.Addr().String()
+
+	selfNode := MeshNode{
+		Name:    "store-2",
+		Address: "10.0.0.3",
+		Port:    8844,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
+
+	// Before bootstrap: only self.
+	nodes := g.Nodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node before bootstrap, got %d", len(nodes))
+	}
+
+	// Bootstrap from seed.
+	g.BootstrapFromSeeds([]string{seedAddr})
+
+	// After bootstrap: self + controller + store-1 = 3 nodes.
+	nodes = g.Nodes()
+	if len(nodes) != 3 {
+		t.Fatalf("expected 3 nodes after bootstrap, got %d", len(nodes))
+	}
+
+	// Verify controller is present.
+	found := false
+	for _, n := range nodes {
+		if n.Name == "controller" {
+			found = true
+			if n.DiskFreeGB != 100 {
+				t.Errorf("expected DiskFreeGB=100 for controller, got %f", n.DiskFreeGB)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("controller not found after seed bootstrap")
+	}
+}
+
+func TestBootstrapFromSeeds_WithAuth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	meshKey := "test-key-123"
+	seedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Require auth.
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+meshKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/v1/nodes" {
+			nodes := []MeshNode{
+				{Name: "controller", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: StatusOnline},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(nodes)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer seedServer.Close()
+
+	seedAddr := seedServer.Listener.Addr().String()
+
+	selfNode := MeshNode{
+		Name:    "store-1",
+		Address: "10.0.0.2",
+		Port:    8844,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, meshKey, "", time.Now(), nil)
+
+	g.BootstrapFromSeeds([]string{seedAddr})
+
+	nodes := g.Nodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes after bootstrap, got %d", len(nodes))
+	}
+}
+
+func TestBootstrapFromSeeds_Unreachable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	selfNode := MeshNode{
+		Name:    "store-1",
+		Address: "10.0.0.2",
+		Port:    8844,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
+
+	// Bootstrap from unreachable seed — should not panic or crash.
+	g.BootstrapFromSeeds([]string{"127.0.0.1:1"})
+
+	nodes := g.Nodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node (self only) when seed is unreachable, got %d", len(nodes))
+	}
+}
+
+func TestBootstrapFromSeeds_FirstFailSecondSucceeds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Second seed returns a valid node list.
+	seedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			nodes := []MeshNode{
+				{Name: "controller", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: StatusOnline},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(nodes)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer seedServer.Close()
+
+	seedAddr := seedServer.Listener.Addr().String()
+
+	selfNode := MeshNode{
+		Name:    "store-1",
+		Address: "10.0.0.2",
+		Port:    8844,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
+
+	// First seed is unreachable, second succeeds.
+	g.BootstrapFromSeeds([]string{"127.0.0.1:1", seedAddr})
+
+	nodes := g.Nodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes after failover to second seed, got %d", len(nodes))
+	}
+
+	found := false
+	for _, n := range nodes {
+		if n.Name == "controller" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("controller not found after failover to second seed")
+	}
+}
+
+func TestRolesEqual(t *testing.T) {
+	tests := []struct {
+		a, b []string
+		want bool
+	}{
+		{[]string{"store"}, []string{"store"}, true},
+		{[]string{"store", "executor"}, []string{"executor", "store"}, true},
+		{[]string{"store"}, []string{"executor"}, false},
+		{[]string{"store", "executor"}, []string{"store"}, false},
+		{nil, nil, true},
+		{nil, []string{}, true},
+		{[]string{"executor", "executor"}, []string{"executor", "store"}, false},
+	}
+	for _, tc := range tests {
+		got := rolesEqual(tc.a, tc.b)
+		if got != tc.want {
+			t.Errorf("rolesEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
