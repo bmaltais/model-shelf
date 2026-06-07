@@ -896,3 +896,212 @@ func timePtr(t time.Time) *time.Time {
 	return &t
 }
 
+func TestJobStore_LastProgressOnAllTransitions(t *testing.T) {
+	before := time.Now().Add(-time.Millisecond)
+
+	t.Run("SetEvicting", func(t *testing.T) {
+		store := NewJobStore()
+		job := store.Create("test/model", "mlx", "", "node-1")
+		store.SetEvicting(job.ID)
+		got := store.Get(job.ID)
+		if !got.LastProgress.After(before) {
+			t.Errorf("SetEvicting: expected LastProgress to be set, got %v", got.LastProgress)
+		}
+	})
+
+	t.Run("SetCompleted", func(t *testing.T) {
+		store := NewJobStore()
+		job := store.Create("test/model", "mlx", "", "node-1")
+		store.SetCompleted(job.ID)
+		got := store.Get(job.ID)
+		if !got.LastProgress.After(before) {
+			t.Errorf("SetCompleted: expected LastProgress to be set, got %v", got.LastProgress)
+		}
+	})
+
+	t.Run("SetAlreadyPresent", func(t *testing.T) {
+		store := NewJobStore()
+		job := store.Create("test/model", "mlx", "", "node-1")
+		store.SetAlreadyPresent(job.ID)
+		got := store.Get(job.ID)
+		if !got.LastProgress.After(before) {
+			t.Errorf("SetAlreadyPresent: expected LastProgress to be set, got %v", got.LastProgress)
+		}
+	})
+
+	t.Run("SetFailed", func(t *testing.T) {
+		store := NewJobStore()
+		job := store.Create("test/model", "mlx", "", "node-1")
+		store.SetFailed(job.ID, "test error")
+		got := store.Get(job.ID)
+		if !got.LastProgress.After(before) {
+			t.Errorf("SetFailed: expected LastProgress to be set, got %v", got.LastProgress)
+		}
+	})
+}
+
+func TestHandlePull_Deduplication(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	reqBody := PullRequest{
+		RepoID: "not-a-valid-repo",
+		Format: "mlx",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	// First pull — creates a new job.
+	req := httptest.NewRequest(http.MethodPost, "/v1/pull", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	d.handlePull(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("first pull: expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var first PullResponse
+	if err := json.NewDecoder(w.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first response: %v", err)
+	}
+	if first.Status != JobQueued {
+		t.Fatalf("first pull: expected status queued, got %s", first.Status)
+	}
+
+	// The background goroutine may transition the job away from queued.
+	// Force it back to downloading so FindActive still picks it up.
+	d.jobs.SetDownloading(first.JobID)
+
+	// Second pull for the same model — should be deduplicated.
+	body, _ = json.Marshal(reqBody)
+	req = httptest.NewRequest(http.MethodPost, "/v1/pull", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	d.handlePull(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("second pull: expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var second PullResponse
+	if err := json.NewDecoder(w.Body).Decode(&second); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+	if second.Status != JobAlreadyInProgress {
+		t.Fatalf("second pull: expected status %q, got %q", JobAlreadyInProgress, second.Status)
+	}
+	if second.JobID != first.JobID {
+		t.Fatalf("second pull: expected same job_id %q, got %q", first.JobID, second.JobID)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestHandlePull_DeduplicationForceBypass(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Create an active job manually.
+	activeJob := d.jobs.Create("owner/model", "mlx", "", "test-node")
+	d.jobs.SetDownloading(activeJob.ID)
+
+	// Pull with --force should bypass dedup and create a new job.
+	reqBody := PullRequest{
+		RepoID: "owner/model",
+		Format: "mlx",
+		Force:  true,
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/v1/pull", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	d.handlePull(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp PullResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != JobQueued {
+		t.Fatalf("expected status queued (new job), got %s", resp.Status)
+	}
+	if resp.JobID == activeJob.ID {
+		t.Fatal("--force should create a new job, not return the active one")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestJobStore_FindActive(t *testing.T) {
+	store := NewJobStore()
+
+	// Create an active local job.
+	job := store.Create("owner/model", "gguf", "Q4_K_M", "node-1")
+	store.SetDownloading(job.ID)
+
+	// FindActive should find it.
+	found := store.FindActive("owner/model", "gguf", "Q4_K_M", "node-1")
+	if found == nil {
+		t.Fatal("expected to find active job")
+	}
+	if found.ID != job.ID {
+		t.Fatalf("expected job %q, got %q", job.ID, found.ID)
+	}
+
+	// Case-insensitive quant match.
+	found = store.FindActive("owner/model", "gguf", "q4_k_m", "node-1")
+	if found == nil {
+		t.Fatal("expected case-insensitive quant match")
+	}
+
+	// Different target — no match.
+	if store.FindActive("owner/model", "gguf", "Q4_K_M", "node-2") != nil {
+		t.Fatal("should not match different target")
+	}
+
+	// After completion, no longer active.
+	store.SetCompleted(job.ID)
+	if store.FindActive("owner/model", "gguf", "Q4_K_M", "node-1") != nil {
+		t.Fatal("completed job should not be returned by FindActive")
+	}
+
+	// Remote (gossip-replicated) job should not be returned.
+	store.mu.Lock()
+	remoteID := generateJobID()
+	store.jobs[remoteID] = &Job{
+		ID:     remoteID,
+		RepoID: "owner/model",
+		Format: "gguf",
+		Quant:  "Q4_K_M",
+		Target: "node-1",
+		Status: JobDownloading,
+		Local:  false,
+	}
+	store.mu.Unlock()
+	if store.FindActive("owner/model", "gguf", "Q4_K_M", "node-1") != nil {
+		t.Fatal("remote job should not be returned by FindActive")
+	}
+}
+

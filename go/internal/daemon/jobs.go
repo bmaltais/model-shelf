@@ -3,6 +3,7 @@ package daemon
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,13 +12,14 @@ import (
 type JobStatus string
 
 const (
-	JobQueued         JobStatus = "queued"
-	JobDownloading    JobStatus = "downloading"
-	JobTransferring   JobStatus = "transferring"
-	JobEvicting       JobStatus = "evicting"
-	JobCompleted      JobStatus = "completed"
-	JobAlreadyPresent JobStatus = "already_present"
-	JobFailed         JobStatus = "failed"
+	JobQueued             JobStatus = "queued"
+	JobDownloading        JobStatus = "downloading"
+	JobTransferring       JobStatus = "transferring"
+	JobEvicting           JobStatus = "evicting"
+	JobCompleted          JobStatus = "completed"
+	JobAlreadyPresent     JobStatus = "already_present"
+	JobFailed            JobStatus = "failed"
+	JobAlreadyInProgress JobStatus = "already_in_progress"
 )
 
 // retentionPeriod is how long completed/failed jobs are kept before pruning.
@@ -98,6 +100,30 @@ func (s *JobStore) Get(id string) *Job {
 	return &copy
 }
 
+// isActiveStatus reports whether a job status represents an in-flight (not yet
+// terminal) job. JobAlreadyInProgress is response-only and must never be stored
+// in a Job.
+func isActiveStatus(s JobStatus) bool {
+	return s == JobQueued || s == JobDownloading || s == JobTransferring || s == JobEvicting
+}
+
+// FindActive returns an active local job matching the given repo_id, format,
+// quant, and target, or nil if none exists. Quant comparison is case-insensitive.
+func (s *JobStore) FindActive(repoID, format, quant, target string) *Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, j := range s.jobs {
+		if !j.Local || !isActiveStatus(j.Status) {
+			continue
+		}
+		if j.RepoID == repoID && j.Format == format && strings.EqualFold(j.Quant, quant) && j.Target == target {
+			copy := *j
+			return &copy
+		}
+	}
+	return nil
+}
+
 // SetDownloading marks a job as downloading.
 func (s *JobStore) SetDownloading(id string) {
 	s.mu.Lock()
@@ -126,6 +152,7 @@ func (s *JobStore) SetEvicting(id string) {
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
 		j.Status = JobEvicting
+		j.LastProgress = time.Now()
 	}
 }
 
@@ -148,6 +175,7 @@ func (s *JobStore) SetCompleted(id string) {
 		j.Status = JobCompleted
 		now := time.Now()
 		j.DoneAt = &now
+		j.LastProgress = now
 	}
 }
 
@@ -161,6 +189,7 @@ func (s *JobStore) SetAlreadyPresent(id string) {
 		j.BytesTotal = 0
 		now := time.Now()
 		j.DoneAt = &now
+		j.LastProgress = now
 	}
 }
 
@@ -173,6 +202,7 @@ func (s *JobStore) SetFailed(id string, errMsg string) {
 		j.Error = errMsg
 		now := time.Now()
 		j.DoneAt = &now
+		j.LastProgress = now
 	}
 }
 
@@ -251,6 +281,9 @@ func (s *JobStore) Merge(jobs []Job) {
 }
 
 // jobStateOrder returns a numeric rank for each status to compare progression.
+// JobAlreadyInProgress is a response-only status (returned by handlePull when a
+// duplicate is detected) and must never be stored in a Job. It returns -1 here
+// to surface accidental persistence as a no-op merge rather than a silent error.
 func jobStateOrder(s JobStatus) int {
 	switch s {
 	case JobQueued:
@@ -259,6 +292,8 @@ func jobStateOrder(s JobStatus) int {
 		return 1
 	case JobCompleted, JobAlreadyPresent, JobFailed:
 		return 2
+	case JobAlreadyInProgress:
+		return -1 // response-only; should never appear in stored jobs
 	default:
 		return -1
 	}
