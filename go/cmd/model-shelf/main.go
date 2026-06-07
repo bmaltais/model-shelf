@@ -1148,6 +1148,9 @@ func cmdDaemon(args []string) int {
 		cfg.Port = port
 	}
 
+	// Propagate build-time version to daemon so it can advertise it in gossip and health.
+	cfg.Version = version
+
 	d := daemon.New(cfg)
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

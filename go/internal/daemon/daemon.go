@@ -42,6 +42,7 @@ type HealthResponse struct {
 	DiskFreeGB    float64  `json:"disk_free_gb"`
 	UptimeSeconds float64  `json:"uptime_seconds"`
 	GPU           *GPUInfo `json:"gpu"`
+	Version       string   `json:"version"`
 }
 
 // NodeInfo describes a mesh node.
@@ -95,6 +96,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 		DiskTotalGB: totalGB,
 		GPU:         gpuInfo,
 		LastSeen:    &now,
+		Version:     cfg.Version,
 	}
 	// Load or create inventory and scan shelf.
 	inv, err := LoadInventory()
@@ -209,6 +211,7 @@ func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 		DiskFreeGB:    freeGB,
 		UptimeSeconds: time.Since(d.startTime).Seconds(),
 		GPU:           gpuInfo,
+		Version:       d.cfg.Version,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
