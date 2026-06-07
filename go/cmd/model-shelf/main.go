@@ -185,20 +185,21 @@ func loadCfg(configPath string) (*resolver.Config, error) {
 func cmdResolve(args []string) int {
 	positional, flags := parseFlags(args)
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--no-download] [--json]")
+		fmt.Println("Usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--source S] [--no-download] [--json]")
 		fmt.Println()
 		fmt.Println("Resolve a model to a local path.")
 		fmt.Println()
 		fmt.Println("Flags:")
 		fmt.Println("  --quant <Q>        Quantization level (required for GGUF)")
 		fmt.Println("  --format <F>       Force format: gguf, mlx, safetensors")
+		fmt.Println("  --source <S>       Prefer source: auto (default), hf, peer")
 		fmt.Println("  --no-download      Never download, even on a miss")
 		fmt.Println("  --json             Emit JSON output")
 		fmt.Println("  --config <path>    Override config file path")
 		return 0
 	}
 	if len(positional) < 1 {
-		fmt.Fprintf(os.Stderr, "usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--no-download] [--json]\n")
+		fmt.Fprintf(os.Stderr, "usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--source S] [--no-download] [--json]\n")
 		return 1
 	}
 	repoID := positional[0]
@@ -210,6 +211,22 @@ func cmdResolve(args []string) int {
 	}
 	if _, ok := flags["no-download"]; ok {
 		cfg.AllowDownloads = false
+	}
+
+	// --source overrides config prefer_source.
+	source := flags["source"]
+	if source != "" {
+		cfg.PreferSource = source
+	}
+	if cfg.PreferSource == "" {
+		cfg.PreferSource = "auto"
+	}
+	switch cfg.PreferSource {
+	case "auto", "hf", "peer":
+		// valid
+	default:
+		fmt.Fprintf(os.Stderr, "error: --source must be one of: auto, hf, peer\n")
+		return 1
 	}
 
 	format := flags["format"]
@@ -235,7 +252,7 @@ func cmdResolve(args []string) int {
 	}
 
 	// If not found locally, check mesh peers and attempt peer transfer before HF.
-	if result.Status == "missing" {
+	if result.Status == "missing" && cfg.PreferSource != "hf" {
 		meshPeers := queryMeshPeers(repoID, format, quant)
 		if len(meshPeers) > 0 {
 			if cfg.AllowDownloads && format == "gguf" {
@@ -257,8 +274,9 @@ func cmdResolve(args []string) int {
 		}
 	}
 
-	// Fall back to HF only when no mesh peer has the model (status still "missing").
-	if result.Status == "missing" && cfg.AllowDownloads {
+	// Fall back to HF when no mesh peer has the model (status still "missing"),
+	// or when --source=hf skipped the peer check entirely.
+	if result.Status == "missing" && cfg.AllowDownloads && cfg.PreferSource != "peer" {
 		result, err = resolver.ResolveModel(cfg, repoID, format, quant)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -274,8 +292,11 @@ func cmdResolve(args []string) int {
 		printResultPretty(repoID, result)
 	}
 
-	if result.Status == "missing" || result.Status == "missing_locally" {
+	if result.Status == "missing" {
 		return 1
+	}
+	if result.Status == "missing_locally" {
+		return 2 // distinct from true miss — model exists on mesh peer
 	}
 
 	// Update inventory last-accessed timestamp on successful resolve.

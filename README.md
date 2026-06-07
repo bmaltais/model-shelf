@@ -255,6 +255,9 @@ model-shelf resolve "Qwen/Qwen3-14B" --format safetensors
 # Never reach out to the network, even on a miss.
 model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --no-download
 
+# Skip slow mesh peer transfer, prefer HF CDN.
+model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --source hf
+
 # Emit JSON for scripting.
 model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
 
@@ -263,7 +266,7 @@ model-shelf list
 model-shelf list --json
 ```
 
-Exit codes: `0` on found/downloaded, `1` on missing.
+Exit codes: `0` on found/downloaded, `1` on missing (not found anywhere), `2` on missing locally but available on a mesh peer (actionable — run `pull`).
 
 ### JSON output
 
@@ -359,8 +362,13 @@ Format is detected from the repo id (override with `--format`):
 For every resolve request:
 
 1. **Curated shelf** — looks in `shelf_root/<format>/`. Hit → return.
-2. **Mesh peers** — if the model is missing locally and the daemon is running, queries other nodes in the mesh. If found on a peer, returns `status="missing_locally"` with `mesh_available` listing which nodes have it.
-3. **Download** — downloads from the Hugging Face Hub REST API directly into the shelf, so the file lands at the friendly path. For GGUF, the actual filename is looked up via the HF API. Pass `--no-download` to skip this step and return `status="missing"` instead.
+2. **Mesh peers** — if the model is missing locally and the daemon is running, queries other nodes in the mesh. If found on a peer, returns `status="missing_locally"` with `mesh_available` listing which nodes have it. Skipped when `--source hf` is set.
+3. **Download** — downloads from the Hugging Face Hub REST API directly into the shelf, so the file lands at the friendly path. For GGUF, the actual filename is looked up via the HF API. Pass `--no-download` to skip this step and return `status="missing"` instead. Skipped when `--source peer` is set.
+
+The `--source` flag (or `prefer_source` in config) controls source selection:
+- `auto` (default) — try mesh peers first, fall back to HF
+- `hf` — skip mesh peers entirely, always download from Hugging Face CDN
+- `peer` — only use mesh peers, never fall back to HF download
 
 For `pull` operations to a target node:
 

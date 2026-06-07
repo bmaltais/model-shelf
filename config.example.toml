@@ -18,6 +18,12 @@ shelf_root = "~/.cache/model-shelf/models"
 # When false, resolve_model returns {status="missing"} instead of downloading.
 allow_downloads = true
 
+# Source preference for resolve/pull when model is not on local shelf.
+# "auto" (default) — try mesh peers first, fall back to HF CDN.
+# "hf"   — skip mesh peers, always download from Hugging Face CDN.
+# "peer"  — only use mesh peers, never download from HF.
+# prefer_source = "auto"
+
 # Examples of alternative backends:
 #   shelf_root = "/Volumes/MyExternal/ModelShelf/models"   # external SSD / DAS on macOS
 #   shelf_root = "/mnt/nas/ai-models"                      # NAS mount on Linux

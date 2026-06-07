@@ -15,10 +15,11 @@ import (
 
 // PullRequest is the body of POST /v1/pull.
 type PullRequest struct {
-	RepoID string `json:"repo_id"`
-	Format string `json:"format,omitempty"`
-	Quant  string `json:"quant,omitempty"`
-	Force  bool   `json:"force,omitempty"`
+	RepoID       string `json:"repo_id"`
+	Format       string `json:"format,omitempty"`
+	Quant        string `json:"quant,omitempty"`
+	Force        bool   `json:"force,omitempty"`
+	PreferSource string `json:"prefer_source,omitempty"` // "auto" (default), "hf", "peer"
 }
 
 // PullResponse is returned by POST /v1/pull.
@@ -81,7 +82,12 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 	job := d.jobs.Create(req.RepoID, format, req.Quant, d.cfg.Name)
 	jobID := job.ID
 
-	go d.executePull(jobID, req.RepoID, format, req.Quant, req.Force)
+	preferSource := req.PreferSource
+	if preferSource == "" {
+		preferSource = "auto"
+	}
+
+	go d.executePull(jobID, req.RepoID, format, req.Quant, req.Force, preferSource)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -95,7 +101,8 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 // executePull runs the download in the background.
 // It first checks if the model already exists locally, then checks if a peer
 // has the model (preferring LAN transfer), and finally falls back to HF download.
-func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool) {
+// preferSource controls source selection: "auto" (default), "hf" (skip peers), "peer" (skip HF).
+func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool, preferSource string) {
 	d.jobs.SetDownloading(jobID)
 	log.Printf("pull: starting download of %s (format=%s, quant=%s, force=%v) job=%s", repoID, format, quant, force, jobID)
 
@@ -119,17 +126,19 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool) {
 	}
 
 	// Step 2: Check mesh inventory — prefer peer transfer (LAN) over HF (WAN).
-	if peer := d.findPeerWithModel(repoID, format, quant); peer != nil {
-		log.Printf("pull: job %s — model found on peer %s, attempting transfer", jobID, peer.Name)
-		if err := d.transferFromPeer(jobID, peer, repoID, format, quant); err != nil {
-			log.Printf("pull: job %s — peer transfer from %s failed: %v, falling back to HF", jobID, peer.Name, err)
-			// Fall through to HF download.
-		} else {
-			// Transfer succeeded — update inventory and complete.
-			d.updateInventoryAfterTransfer(jobID, repoID, format, quant)
-			d.jobs.SetCompleted(jobID)
-			log.Printf("pull: job %s completed — %s transferred from peer %s", jobID, repoID, peer.Name)
-			return
+	if preferSource != "hf" {
+		if peer := d.findPeerWithModel(repoID, format, quant); peer != nil {
+			log.Printf("pull: job %s — model found on peer %s, attempting transfer", jobID, peer.Name)
+			if err := d.transferFromPeer(jobID, peer, repoID, format, quant); err != nil {
+				log.Printf("pull: job %s — peer transfer from %s failed: %v, falling back to HF", jobID, peer.Name, err)
+				// Fall through to HF download.
+			} else {
+				// Transfer succeeded — update inventory and complete.
+				d.updateInventoryAfterTransfer(jobID, repoID, format, quant)
+				d.jobs.SetCompleted(jobID)
+				log.Printf("pull: job %s completed — %s transferred from peer %s", jobID, repoID, peer.Name)
+				return
+			}
 		}
 	}
 
@@ -141,6 +150,11 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool) {
 	}
 
 	// Step 4: Fall back to downloading from Hugging Face.
+	if preferSource == "peer" {
+		d.jobs.SetFailed(jobID, "model not available on any mesh peer and --source=peer prevents HF download")
+		log.Printf("pull: job %s failed: no peer has model, source=peer prevents HF fallback", jobID)
+		return
+	}
 	d.jobs.SetDownloading(jobID)
 	cfg := &resolver.Config{
 		ShelfRoot:      d.cfg.ShelfRoot,

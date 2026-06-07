@@ -25,13 +25,14 @@ type GPUConfig struct {
 
 // Config holds the mesh node configuration.
 type Config struct {
-	Name      string     `toml:"name"`
-	Port      int        `toml:"port"`
-	Roles     []string   `toml:"roles"`
-	ShelfRoot string     `toml:"shelf_root"`
-	MeshKey   string     `toml:"-"` // loaded separately from mesh.key file
-	Seeds     []string   `toml:"seeds,omitempty"`
-	GPU       *GPUConfig `toml:"gpu,omitempty"`
+	Name         string     `toml:"name"`
+	Port         int        `toml:"port"`
+	Roles        []string   `toml:"roles"`
+	ShelfRoot    string     `toml:"shelf_root"`
+	MeshKey      string     `toml:"-"` // loaded separately from mesh.key file
+	Seeds        []string   `toml:"seeds,omitempty"`
+	GPU          *GPUConfig `toml:"gpu,omitempty"`
+	PreferSource string     `toml:"prefer_source,omitempty"` // "auto" (default), "hf", "peer"
 }
 
 // ConfigDir returns the path to ~/.model-shelf/.

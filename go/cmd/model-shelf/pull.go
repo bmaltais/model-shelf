@@ -21,7 +21,7 @@ func cmdPull(args []string) int {
 	jsonMode := flags["json"] == "true"
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--force] [--json]")
+		fmt.Println("Usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--source S] [--force] [--json]")
 		fmt.Println()
 		fmt.Println("Pull a model from Hugging Face to a target node.")
 		fmt.Println("If --target is omitted, auto-selects the best Executor based on VRAM capacity.")
@@ -31,6 +31,7 @@ func cmdPull(args []string) int {
 		fmt.Println("  --target <node>    Target node name (auto-selects if omitted)")
 		fmt.Println("  --quant <Q>        Quantization level (required for GGUF)")
 		fmt.Println("  --format <F>       Force format: gguf, mlx, safetensors")
+		fmt.Println("  --source <S>       Prefer source: auto (default), hf, peer")
 		fmt.Println("  --force            Delete and re-transfer if model already exists")
 		fmt.Println("  --json             Emit JSON output")
 		return 0
@@ -91,11 +92,23 @@ func cmdPull(args []string) int {
 	meshKey := loadMeshKey()
 
 	// Send POST /v1/pull to the target.
+	sourceFlag := flags["source"]
+	if sourceFlag == "" {
+		sourceFlag = "auto"
+	}
+	switch sourceFlag {
+	case "auto", "hf", "peer":
+		// valid
+	default:
+		emitPullError(jsonMode, "--source must be one of: auto, hf, peer")
+		return 1
+	}
 	pullReq := daemon.PullRequest{
-		RepoID: repoID,
-		Format: format,
-		Quant:  quant,
-		Force:  flags["force"] == "true",
+		RepoID:       repoID,
+		Format:       format,
+		Quant:        quant,
+		Force:        flags["force"] == "true",
+		PreferSource: sourceFlag,
 	}
 	body, err := json.Marshal(pullReq)
 	if err != nil {
