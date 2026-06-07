@@ -835,6 +835,54 @@ func TestBootstrapFromSeeds_Unreachable(t *testing.T) {
 	}
 }
 
+func TestBootstrapFromSeeds_FirstFailSecondSucceeds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Second seed returns a valid node list.
+	seedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			nodes := []MeshNode{
+				{Name: "controller", Address: "10.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: StatusOnline},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(nodes)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer seedServer.Close()
+
+	seedAddr := seedServer.Listener.Addr().String()
+
+	selfNode := MeshNode{
+		Name:    "store-1",
+		Address: "10.0.0.2",
+		Port:    8844,
+		Roles:   []string{"store"},
+		Status:  StatusOnline,
+	}
+	g := NewGossip(selfNode, "", "", time.Now(), nil)
+
+	// First seed is unreachable, second succeeds.
+	g.BootstrapFromSeeds([]string{"127.0.0.1:1", seedAddr})
+
+	nodes := g.Nodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes after failover to second seed, got %d", len(nodes))
+	}
+
+	found := false
+	for _, n := range nodes {
+		if n.Name == "controller" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("controller not found after failover to second seed")
+	}
+}
+
 func TestRolesEqual(t *testing.T) {
 	tests := []struct {
 		a, b []string
@@ -846,6 +894,7 @@ func TestRolesEqual(t *testing.T) {
 		{[]string{"store", "executor"}, []string{"store"}, false},
 		{nil, nil, true},
 		{nil, []string{}, true},
+		{[]string{"executor", "executor"}, []string{"executor", "store"}, false},
 	}
 	for _, tc := range tests {
 		got := rolesEqual(tc.a, tc.b)

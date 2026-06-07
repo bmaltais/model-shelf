@@ -116,7 +116,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 	d.gossip.SetGPUConfig(cfg.GPU)
 
 	// Bootstrap from seeds to ensure non-controller nodes discover all peers.
-	// This contacts the seed node to fetch the full mesh state. (Fixes #136)
+	// This contacts the seed node to fetch the full mesh state.
 	d.gossip.BootstrapFromSeeds(cfg.Seeds)
 
 	return d

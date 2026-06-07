@@ -187,7 +187,7 @@ const (
 	// transferBufferSize is the buffer size for peer-to-peer transfers (1MB).
 	// The default io.Copy buffer (32KB) causes excessive syscall overhead on
 	// fast LANs, making the first transfer ~60x slower than subsequent ones
-	// due to TCP slow-start amplification. (Fixes #139)
+	// due to TCP slow-start amplification.
 	transferBufferSize = 1024 * 1024
 )
 
@@ -278,7 +278,7 @@ func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format
 
 	// Use a transport with larger read buffer to reduce syscall overhead on
 	// fast LANs — the default net/http transport uses 4KB reads which causes
-	// excessive context switches during large file transfers. (Fixes #139)
+	// excessive context switches during large file transfers.
 	transport := &http.Transport{
 		ReadBufferSize:  transferBufferSize,
 		WriteBufferSize: transferBufferSize,

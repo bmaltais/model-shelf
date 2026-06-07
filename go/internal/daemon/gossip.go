@@ -388,7 +388,7 @@ func (g *Gossip) pollPeers() {
 				metricsChanged = true
 			}
 			// Update roles from health response so role changes propagate via
-			// gossip polling without requiring a full re-join. (Fixes #138)
+			// gossip polling without requiring a full re-join.
 			if len(hr.Roles) > 0 && !rolesEqual(nodes[i].Roles, hr.Roles) {
 				log.Printf("gossip: node %q roles changed: %v → %v", nodes[i].Name, nodes[i].Roles, hr.Roles)
 				nodes[i].Roles = hr.Roles
@@ -608,12 +608,13 @@ func rolesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	set := make(map[string]bool, len(a))
+	freq := make(map[string]int, len(a))
 	for _, r := range a {
-		set[r] = true
+		freq[r]++
 	}
 	for _, r := range b {
-		if !set[r] {
+		freq[r]--
+		if freq[r] < 0 {
 			return false
 		}
 	}
@@ -623,7 +624,7 @@ func rolesEqual(a, b []string) bool {
 // BootstrapFromSeeds contacts seed nodes to fetch the full mesh state
 // and merges it into local gossip state. This ensures non-controller nodes
 // can always discover all mesh participants even if mesh.json is stale.
-// (Fixes #136)
+
 func (g *Gossip) BootstrapFromSeeds(seeds []string) {
 	if len(seeds) == 0 {
 		return
@@ -680,7 +681,7 @@ func (g *Gossip) BootstrapFromSeeds(seeds []string) {
 // fetchNodesFromSeed queries a seed node's /v1/nodes endpoint.
 func (g *Gossip) fetchNodesFromSeed(seed string) ([]MeshNode, error) {
 	url := fmt.Sprintf("http://%s/v1/nodes", seed)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 3 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

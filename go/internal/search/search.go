@@ -36,7 +36,7 @@ func FindModels(query string, format string, limit int) ([]FindResult, error) {
 	// When a format filter is specified, append the format keyword to the search
 	// query so the HF API returns format-relevant results. Without this, the API
 	// returns results matching only the text query (e.g. safetensors models) which
-	// are then filtered out client-side, yielding empty results. (Fixes #137)
+	// are then filtered out client-side, yielding empty results.
 	searchQuery := query
 	if format != "" && !containsFormatKeyword(query, format) {
 		searchQuery = query + " " + format
