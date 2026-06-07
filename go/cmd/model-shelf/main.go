@@ -159,8 +159,23 @@ var booleanFlags = map[string]bool{
 	"local":       true,
 }
 
+// valueFlags lists flags that require a value argument.
+var valueFlags = map[string]bool{
+	"quant":  true,
+	"format": true,
+	"source": true,
+	"config": true,
+	"key":    true,
+	"limit":  true,
+	"shelf":  true,
+	"role":   true,
+	"name":   true,
+	"seed":   true,
+	"port":   true,
+	"target": true,
+}
+
 // parseFlags is a minimal flag parser that handles --key value, --flag, and -h style args.
-// Non-boolean flags that are missing their value argument cause a fatal error.
 func parseFlags(args []string) (positional []string, flags map[string]string) {
 	flags = make(map[string]string)
 	for i := 0; i < len(args); i++ {
@@ -170,7 +185,7 @@ func parseFlags(args []string) (positional []string, flags map[string]string) {
 			key := strings.TrimPrefix(args[i], "--")
 			if booleanFlags[key] {
 				flags[key] = "true"
-			} else {
+			} else if valueFlags[key] {
 				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
 					flags[key] = args[i+1]
 					i++
@@ -178,12 +193,30 @@ func parseFlags(args []string) (positional []string, flags map[string]string) {
 					fmt.Fprintf(os.Stderr, "error: flag --%s requires a value\n", key)
 					os.Exit(1)
 				}
+			} else {
+				fmt.Fprintf(os.Stderr, "error: unknown flag: --%s\n", key)
+				os.Exit(1)
 			}
 		} else {
 			positional = append(positional, args[i])
 		}
 	}
 	return
+}
+
+// writeJSONError writes {"error": msg} to stdout for --json error paths.
+func writeJSONError(msg string) {
+	json.NewEncoder(os.Stdout).Encode(map[string]string{"error": msg})
+}
+
+// emitError reports an error in the appropriate format: JSON to stdout when
+// jsonOutput is true, or plain text to stderr otherwise.
+func emitError(jsonOutput bool, msg string) {
+	if jsonOutput {
+		writeJSONError(msg)
+	} else {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+	}
 }
 
 func loadCfg(configPath string) (*resolver.Config, error) {
