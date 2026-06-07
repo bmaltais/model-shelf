@@ -176,7 +176,7 @@ model-shelf service uninstall
 # Human-readable table with status and disk metrics
 model-shelf nodes
 
-# JSON output for scripting (includes disk, uptime, gpu, last_seen)
+# JSON output for scripting (includes disk, uptime, gpu, last_seen, version)
 model-shelf nodes --json
 ```
 
@@ -529,7 +529,7 @@ model-shelf init --role store --shelf ~/.cache/model-shelf/models
 
 ## Status
 
-v0.5.9 (Go binary) — GGUF, MLX, and safetensors via CLI. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), disk/uptime/GPU metrics propagation, and **peer-to-peer model transfers**. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics (including GPU) for scripting. Smart source selection (`--source auto|hf|peer`) and exit code 2 for `missing_locally`.
+v0.5.9 (Go binary) — GGUF, MLX, and safetensors via CLI. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), disk/uptime/GPU metrics propagation, and **peer-to-peer model transfers**. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics (including GPU and version) for scripting. Smart source selection (`--source auto|hf|peer`) and exit code 2 for `missing_locally`.
 
 ### Go version
 

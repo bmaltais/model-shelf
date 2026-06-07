@@ -68,7 +68,7 @@ func printNodesTable(nodes []daemon.MeshNode) {
 	}
 
 	// Compute column widths from content.
-	headers := []string{"NAME", "ROLES", "STATUS", "DISK FREE", "LAST SEEN"}
+	headers := []string{"NAME", "ROLES", "STATUS", "DISK FREE", "LAST SEEN", "VERSION"}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = len(h)
@@ -80,6 +80,7 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		status   string
 		diskFree string
 		lastSeen string
+		version  string
 	}
 	rows := make([]row, len(nodes))
 	for i, n := range nodes {
@@ -96,8 +97,12 @@ func printNodesTable(nodes []daemon.MeshNode) {
 			elapsed := time.Since(*n.LastSeen)
 			lastSeen = formatDuration(elapsed)
 		}
+		ver := n.Version
+		if ver == "" {
+			ver = "-"
+		}
 
-		rows[i] = row{n.Name, roles, status, diskFree, lastSeen}
+		rows[i] = row{n.Name, roles, status, diskFree, lastSeen, ver}
 
 		if len(n.Name) > widths[0] {
 			widths[0] = len(n.Name)
@@ -114,10 +119,13 @@ func printNodesTable(nodes []daemon.MeshNode) {
 		if len(lastSeen) > widths[4] {
 			widths[4] = len(lastSeen)
 		}
+		if len(ver) > widths[5] {
+			widths[5] = len(ver)
+		}
 	}
 
 	// Truncate columns to fit terminal width.
-	// Separators take 2 chars each (4 gaps × 2 = 8 chars).
+	// Separators take 2 chars each (5 gaps × 2 = 10 chars).
 	const gapWidth = 2
 	totalGaps := (len(headers) - 1) * gapWidth
 	totalContent := 0
@@ -141,9 +149,9 @@ func printNodesTable(nodes []daemon.MeshNode) {
 	}
 
 	// Print header.
-	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds\n",
-		widths[0], widths[1], widths[2], widths[3], widths[4])
-	fmt.Printf(fmtStr, headers[0], headers[1], headers[2], headers[3], headers[4])
+	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds  %%-%ds\n",
+		widths[0], widths[1], widths[2], widths[3], widths[4], widths[5])
+	fmt.Printf(fmtStr, headers[0], headers[1], headers[2], headers[3], headers[4], headers[5])
 
 	// Print rows (truncate values to column width).
 	for _, r := range rows {
@@ -153,6 +161,7 @@ func printNodesTable(nodes []daemon.MeshNode) {
 			truncate(r.status, widths[2]),
 			truncate(r.diskFree, widths[3]),
 			truncate(r.lastSeen, widths[4]),
+			truncate(r.version, widths[5]),
 		)
 	}
 }

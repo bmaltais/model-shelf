@@ -33,6 +33,7 @@ type Config struct {
 	Seeds        []string   `toml:"seeds,omitempty"`
 	GPU          *GPUConfig `toml:"gpu,omitempty"`
 	PreferSource string     `toml:"prefer_source,omitempty"` // "auto" (default), "hf", "peer"
+	Version      string     `toml:"-"` // set at runtime from build-time version variable; never persisted
 }
 
 // ConfigDir returns the path to ~/.model-shelf/.

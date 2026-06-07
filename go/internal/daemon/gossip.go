@@ -40,6 +40,7 @@ type MeshNode struct {
 	UptimeSeconds float64    `json:"uptime_seconds"`
 	GPU           *GPUInfo   `json:"gpu"`
 	LastSeen      *time.Time `json:"last_seen"`
+	Version       string     `json:"version"`
 }
 
 // EventType describes what happened.
@@ -394,6 +395,11 @@ func (g *Gossip) pollPeers() {
 				nodes[i].Roles = hr.Roles
 				metricsChanged = true
 			}
+			// Update version from health response so upgrades propagate via gossip polling.
+			if hr.Version != "" && nodes[i].Version != hr.Version {
+				nodes[i].Version = hr.Version
+				metricsChanged = true
+			}
 			// Update GPU info from peer health response (including nil to clear stale data).
 			if hr.GPU != nodes[i].GPU {
 				gpuChanged := false
@@ -459,6 +465,7 @@ func (g *Gossip) pollPeers() {
 					g.nodes[j].GPU = updated.GPU
 					g.nodes[j].LastSeen = updated.LastSeen
 					g.nodes[j].Roles = updated.Roles
+					g.nodes[j].Version = updated.Version
 					break
 				}
 			}
@@ -487,6 +494,7 @@ type healthResult struct {
 	DiskTotalGB   float64
 	UptimeSeconds float64
 	GPU           *GPUInfo
+	Version       string
 }
 
 func (g *Gossip) checkHealth(node MeshNode) healthResult {
@@ -513,11 +521,12 @@ func (g *Gossip) checkHealth(node MeshNode) healthResult {
 		DiskTotalGB   float64  `json:"disk_total_gb"`
 		UptimeSeconds float64  `json:"uptime_seconds"`
 		GPU           *GPUInfo `json:"gpu"`
+		Version       string   `json:"version"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
 		return healthResult{OK: true}
 	}
-	return healthResult{OK: true, Roles: hr.Roles, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds, GPU: hr.GPU}
+	return healthResult{OK: true, Roles: hr.Roles, DiskFreeGB: hr.DiskFreeGB, DiskTotalGB: hr.DiskTotalGB, UptimeSeconds: hr.UptimeSeconds, GPU: hr.GPU, Version: hr.Version}
 }
 
 // fetchPeerJobs fetches jobs from a peer node and merges them into the local store.
