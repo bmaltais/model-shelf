@@ -46,6 +46,8 @@ type Job struct {
 	Error           string     `json:"error,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	DoneAt          *time.Time `json:"done_at,omitempty"`
+	LastProgress    time.Time  `json:"last_progress,omitempty"`
+	Local           bool       `json:"-"` // true if created on this node (not replicated)
 }
 
 // JobStore manages pull/transfer jobs in memory.
@@ -64,15 +66,18 @@ func NewJobStore() *JobStore {
 // Create adds a new job in queued status and returns it.
 func (s *JobStore) Create(repoID, format, quant, target string) *Job {
 	id := generateJobID()
+	now := time.Now()
 	job := &Job{
-		ID:        id,
-		Type:      JobTypeDownload,
-		RepoID:    repoID,
-		Format:    format,
-		Quant:     quant,
-		Target:    target,
-		Status:    JobQueued,
-		CreatedAt: time.Now(),
+		ID:           id,
+		Type:         JobTypeDownload,
+		RepoID:       repoID,
+		Format:       format,
+		Quant:        quant,
+		Target:       target,
+		Status:       JobQueued,
+		CreatedAt:    now,
+		LastProgress: now,
+		Local:        true,
 	}
 	s.mu.Lock()
 	s.jobs[id] = job
@@ -99,6 +104,7 @@ func (s *JobStore) SetDownloading(id string) {
 	defer s.mu.Unlock()
 	if j, ok := s.jobs[id]; ok {
 		j.Status = JobDownloading
+		j.LastProgress = time.Now()
 	}
 }
 
@@ -110,6 +116,7 @@ func (s *JobStore) SetTransferring(id string, source string) {
 		j.Status = JobTransferring
 		j.Type = JobTypeTransfer
 		j.Source = source
+		j.LastProgress = time.Now()
 	}
 }
 
@@ -129,6 +136,7 @@ func (s *JobStore) SetProgress(id string, downloaded, total int64) {
 	if j, ok := s.jobs[id]; ok {
 		j.BytesDownloaded = downloaded
 		j.BytesTotal = total
+		j.LastProgress = time.Now()
 	}
 }
 
@@ -179,6 +187,45 @@ func (s *JobStore) All() []Job {
 	out := make([]Job, 0, len(s.jobs))
 	for _, j := range s.jobs {
 		out = append(out, *j)
+	}
+	return out
+}
+
+// LocalAll returns only jobs created on this node (not replicated via gossip).
+func (s *JobStore) LocalAll() []Job {
+	s.mu.Lock()
+	s.pruneLocked()
+	s.mu.Unlock()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Job, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		if j.Local {
+			out = append(out, *j)
+		}
+	}
+	return out
+}
+
+// StalledJobs returns local in-progress jobs (downloading/transferring) whose
+// last progress update is older than the given timeout. Used by the watchdog
+// to detect and fail zombie jobs.
+func (s *JobStore) StalledJobs(timeout time.Duration) []Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-timeout)
+	var out []Job
+	for _, j := range s.jobs {
+		if !j.Local {
+			continue
+		}
+		if j.Status != JobDownloading && j.Status != JobTransferring {
+			continue
+		}
+		if j.LastProgress.Before(cutoff) {
+			out = append(out, *j)
+		}
 	}
 	return out
 }
