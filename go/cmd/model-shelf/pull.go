@@ -69,6 +69,36 @@ func cmdPull(args []string) int {
 		return 1
 	}
 
+	// If no target specified, check local shelf first before smart placement.
+	if target == "" && flags["force"] != "true" {
+		if cfg, err := meshconfig.Load(); err == nil && cfg.ShelfRoot != "" {
+			localResult, err := resolver.ResolveModel(&resolver.Config{
+				ShelfRoot:      cfg.ShelfRoot,
+				AllowDownloads: false,
+			}, repoID, format, quant)
+			if err == nil && localResult.Status == "found" {
+				localName := cfg.Name
+				if localName == "" {
+					if h, err := os.Hostname(); err == nil {
+						localName = h
+					}
+				}
+				if jsonMode {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					enc.Encode(daemon.PullResponse{
+						Status: daemon.JobAlreadyPresent,
+						Target: localName,
+					})
+				} else {
+					fmt.Printf("  status    %s\n", daemon.JobAlreadyPresent)
+					fmt.Printf("  target    %s\n", localName)
+				}
+				return 0
+			}
+		}
+	}
+
 	// If no target specified, use smart placement to auto-select an Executor.
 	var placementResult *daemon.PlacementResult
 	if target == "" {

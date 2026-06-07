@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
+	"github.com/alexziskind1/model-shelf/internal/resolver"
 )
 
 func TestCmdPull_Success(t *testing.T) {
@@ -433,5 +434,120 @@ func TestPullStatusHint(t *testing.T) {
 				t.Errorf("code %d: expected hint containing %q, got %q", tc.code, tc.wantSub, hint)
 			}
 		}
+	}
+}
+
+// TestCmdPull_AlreadyPresentLocally verifies that when the model already exists
+// on the local shelf and --force is not set, cmdPull returns 0 with already_present
+// without calling the placement engine.
+func TestCmdPull_AlreadyPresentLocally(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	// Create the GGUF file at the resolver-expected path.
+	modelPath, err := resolver.ShelfPathGGUF(shelfRoot, "unsloth/Qwen3-0.6B-GGUF", "Q4_K_M")
+	if err != nil {
+		t.Fatalf("ShelfPathGGUF: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(modelPath), 0o755)
+	os.WriteFile(modelPath, []byte("fake gguf content"), 0o644)
+
+	// Write mesh config; placement engine should never be called.
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := fmt.Sprintf("name = \"local-node\"\nport = 19998\nroles = [\"executor\"]\nshelf_root = %q\n", shelfRoot)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdPull([]string{"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0 (already_present locally), got %d", code)
+	}
+	if !strings.Contains(string(out), "already_present") {
+		t.Errorf("expected 'already_present' in output, got: %s", out)
+	}
+	if !strings.Contains(string(out), "local-node") {
+		t.Errorf("expected local node name in output, got: %s", out)
+	}
+}
+
+// TestCmdPull_AlreadyPresentLocally_JSON verifies the JSON output shape for the
+// already-present-locally case.
+func TestCmdPull_AlreadyPresentLocally_JSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	modelPath, err := resolver.ShelfPathGGUF(shelfRoot, "unsloth/Qwen3-0.6B-GGUF", "Q4_K_M")
+	if err != nil {
+		t.Fatalf("ShelfPathGGUF: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(modelPath), 0o755)
+	os.WriteFile(modelPath, []byte("fake gguf content"), 0o644)
+
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := fmt.Sprintf("name = \"local-node\"\nport = 19997\nroles = [\"executor\"]\nshelf_root = %q\n", shelfRoot)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdPull([]string{"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0 (already_present locally), got %d", code)
+	}
+	var resp daemon.PullResponse
+	if err := json.Unmarshal(outBytes, &resp); err != nil {
+		t.Fatalf("expected JSON output, got: %s (parse error: %v)", outBytes, err)
+	}
+	if resp.Status != daemon.JobAlreadyPresent {
+		t.Errorf("expected status %q, got %q", daemon.JobAlreadyPresent, resp.Status)
+	}
+	if resp.Target != "local-node" {
+		t.Errorf("expected target 'local-node', got %q", resp.Target)
+	}
+}
+
+// TestCmdPull_ForceBypassesLocalCheck verifies that --force skips the local shelf
+// check and proceeds to placement (which fails here because the daemon is unreachable).
+func TestCmdPull_ForceBypassesLocalCheck(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	modelPath, err := resolver.ShelfPathGGUF(shelfRoot, "unsloth/Qwen3-0.6B-GGUF", "Q4_K_M")
+	if err != nil {
+		t.Fatalf("ShelfPathGGUF: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(modelPath), 0o755)
+	os.WriteFile(modelPath, []byte("fake gguf content"), 0o644)
+
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := fmt.Sprintf("name = \"local-node\"\nport = 19996\nroles = [\"executor\"]\nshelf_root = %q\n", shelfRoot)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	code := cmdPull([]string{"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M", "--force"})
+	// --force bypasses the local check and calls autoSelectTarget, which fails
+	// because the daemon is not running.
+	if code == 0 {
+		t.Fatalf("expected non-zero exit code when --force bypasses local check, got 0")
 	}
 }
