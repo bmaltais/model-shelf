@@ -19,7 +19,7 @@ func cmdLeave(args []string) int {
 		fmt.Println()
 		fmt.Println("Leave the mesh. Gossips departure to all peers, then clears local")
 		fmt.Println("mesh state (seeds, mesh.json, mesh.key). Config and models remain.")
-		fmt.Println("The daemon continues running in standalone mode (no mesh).")
+		fmt.Println("The daemon will be restarted to enter standalone mode (no mesh).")
 		return 0
 	}
 
@@ -111,7 +111,11 @@ func cmdLeave(args []string) int {
 		fmt.Printf("model-shelf: left mesh\n")
 	}
 	fmt.Printf("model-shelf: cleared mesh key and state\n")
-	fmt.Printf("model-shelf: daemon continues in standalone mode\n")
+
+	// Restart the daemon so it picks up the cleared key and enters standalone mode.
+	if !restartDaemonIfRunning("restarted daemon in standalone mode") {
+		fmt.Printf("model-shelf: daemon continues in standalone mode\n")
+	}
 
 	return 0
 }

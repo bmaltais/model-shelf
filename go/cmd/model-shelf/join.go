@@ -13,7 +13,6 @@ import (
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
-	"github.com/alexziskind1/model-shelf/internal/service"
 	"golang.org/x/term"
 )
 
@@ -181,16 +180,7 @@ func cmdJoin(args []string) int {
 	}
 
 	// Restart the daemon if running so it picks up the new mesh key.
-	status, err := service.GetStatus()
-	if err == nil && status.Running {
-		if err := service.Stop(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to stop daemon: %v\n", err)
-		} else if err := service.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to restart daemon: %v\n", err)
-		} else {
-			fmt.Printf("model-shelf: restarted daemon with new mesh key\n")
-		}
-	}
+	restartDaemonIfRunning("restarted daemon with new mesh key")
 
 	return 0
 }
