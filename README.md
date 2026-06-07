@@ -124,6 +124,8 @@ model-shelf init --role controller,store --shelf /data/models --force
 
 **Optional flags:**
 - `--name <name>` — node name (defaults to hostname)
+- `--seed <addrs>` — comma-separated seed peer addresses (e.g. `host1:8844,host2:8844`); pre-populates the peer list so the node can gossip without running `join` first
+- `--key <mesh-key>` — write a specific mesh key to disk instead of generating one (useful when re-imaging a node that should rejoin an existing mesh)
 - `--force` — overwrite existing config
 
 Init creates the shelf directory structure (gguf/, mlx/, safetensors/ subdirectories) and writes the mesh config to `~/.model-shelf/config.toml`. If the node has the `controller` role, a mesh key is generated automatically.
@@ -140,6 +142,15 @@ model-shelf join ocilab1:8844 --key <mesh-key>
 
 The mesh key is displayed when the controller is initialized. All nodes in the mesh share the same key for authentication.
 
+**Non-interactive / CI join** — set `MODEL_SHELF_MESH_KEY` instead of passing `--key`:
+
+```bash
+export MODEL_SHELF_MESH_KEY="$(cat mesh.key)"
+model-shelf join ocilab1:8844
+```
+
+The environment variable is read when `--key` is not provided. This is the recommended approach for automated provisioning scripts and CI pipelines where passing secrets on the command line is undesirable.
+
 ### Mesh daemon
 
 The daemon runs in the background and handles health polling, gossip, and node coordination:
@@ -154,6 +165,7 @@ model-shelf daemon
 # Manage the service
 model-shelf service start
 model-shelf service stop
+model-shelf service restart
 model-shelf service status
 model-shelf service uninstall
 ```
@@ -203,6 +215,7 @@ model-shelf leave
 model-shelf service install    # install + enable + start
 model-shelf service start      # start if already installed
 model-shelf service stop       # stop
+model-shelf service restart    # stop + start (applies config changes)
 model-shelf service status     # show whether running
 model-shelf service uninstall  # remove
 
@@ -226,6 +239,14 @@ model-shelf pull "mlx-community/Qwen3-14B-4bit" --target mac-mini
 # Queries HF API for model size, estimates VRAM, picks the best Executor
 model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M
 model-shelf pull "mlx-community/Qwen3-14B-4bit" --json
+
+# Force re-pull even if the model is already present (deletes existing copy first)
+model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --force
+
+# Control where the model comes from
+model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --source hf    # always download from HF
+model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --source peer  # only transfer from a mesh peer
+model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --source auto  # peer first, fall back to HF (default)
 
 # Show job status (downloads, transfers)
 # Defaults to mesh-wide on controller nodes or when seeds are configured
@@ -266,6 +287,13 @@ model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
 # List what's on the local shelf (all three format subfolders).
 model-shelf list
 model-shelf list --json
+
+# Override config file path (useful in multi-shelf setups or CI)
+model-shelf list --config /path/to/config.toml --json
+model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --config /path/to/config.toml
+
+# Print the installed version
+model-shelf version
 ```
 
 Exit codes: `0` on found/downloaded, `1` on missing (not found anywhere), `2` on missing locally but available on a mesh peer (actionable — run `pull`).
@@ -297,11 +325,57 @@ When a model is missing locally but available on a mesh peer:
 }
 ```
 
+`model-shelf nodes --json` returns:
+
+```json
+[
+  {
+    "name": "gpu-box-1",
+    "address": "10.0.0.2",
+    "port": 8844,
+    "roles": ["executor", "store"],
+    "status": "online",
+    "missed_polls": 0,
+    "disk_free_gb": 120.5,
+    "disk_total_gb": 500.0,
+    "uptime_seconds": 86400,
+    "gpu": {"name": "NVIDIA RTX 4090", "vram_total_gb": 24.0, "vram_available_gb": 18.3},
+    "last_seen": "2025-06-01T12:00:00Z"
+  }
+]
+```
+
+All fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Node name (set during `init`) |
+| `address` | string | IP or hostname |
+| `port` | int | Daemon listen port |
+| `roles` | string[] | Node roles: `controller`, `store`, `executor` |
+| `status` | string | `online` or `offline` |
+| `missed_polls` | int | Consecutive failed health polls (omitted when 0) |
+| `disk_free_gb` | float | Free disk space on shelf volume (GB) |
+| `disk_total_gb` | float | Total disk space on shelf volume (GB) |
+| `uptime_seconds` | float | Daemon uptime in seconds |
+| `gpu` | object\|null | GPU info (see below); `null` if no GPU detected |
+| `gpu.name` | string | GPU model name |
+| `gpu.vram_total_gb` | float | Total VRAM (GB) |
+| `gpu.vram_available_gb` | float | Available VRAM (GB) |
+| `last_seen` | RFC3339\|null | Timestamp of last successful health poll |
+
 `model-shelf list --json` returns:
 
 ```json
 [
-  {"repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "size_bytes": 8320000000, "path": "/mnt/nas/ai-models/gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf"}
+  {
+    "repo_id": "Qwen/Qwen3-14B-GGUF",
+    "format": "gguf",
+    "quant": "Q4_K_M",
+    "size_bytes": 8320000000,
+    "path": "/mnt/nas/ai-models/gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf",
+    "shelf_root": "/mnt/nas/ai-models"
+  }
 ]
 ```
 
@@ -310,17 +384,54 @@ When a model is missing locally but available on a mesh peer:
 ```json
 [
   {"node": "gpu-box-1", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "size_bytes": 8320000000},
-  {"node": "nas-store", "repo_id": "mlx-community/Qwen3-14B-4bit", "format": "mlx", "size_bytes": 7500000000}
+  {"node": "nas-store", "repo_id": "mlx-community/Qwen3-14B-4bit", "format": "mlx", "size_bytes": 7500000000},
+  {"node": "offline-node", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "size_bytes": 8320000000, "stale": true}
 ]
 ```
+
+The `stale` field is `true` when the node was unreachable at query time — the row reflects cached state from the last successful contact.
 
 `model-shelf status --json` returns in-flight and recent jobs:
 
 ```json
 [
-  {"job_id": "abc123", "type": "transfer", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "target": "gpu-box-1", "source": "nas-store", "status": "transferring", "bytes_downloaded": 4160000000, "bytes_total": 8320000000}
+  {
+    "job_id": "abc123",
+    "type": "transfer",
+    "repo_id": "Qwen/Qwen3-14B-GGUF",
+    "format": "gguf",
+    "quant": "Q4_K_M",
+    "target": "gpu-box-1",
+    "source": "nas-store",
+    "status": "transferring",
+    "bytes_downloaded": 4160000000,
+    "bytes_total": 8320000000,
+    "created_at": "2025-06-01T12:00:00Z",
+    "done_at": null,
+    "error": "",
+    "last_progress": "2025-06-01T12:01:30Z"
+  }
 ]
 ```
+
+All fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `job_id` | string | Unique job identifier |
+| `type` | string | `download` or `transfer` |
+| `repo_id` | string | Hugging Face repo id |
+| `format` | string | `gguf`, `mlx`, or `safetensors` |
+| `quant` | string | Quantization (GGUF only, omitted otherwise) |
+| `target` | string | Node the model is being pulled to |
+| `source` | string | Source node name (peer transfers only) |
+| `status` | string | `queued`, `downloading`, `transferring`, `evicting`, `completed`, `failed`, `already_present`, `already_in_progress` |
+| `bytes_downloaded` | int64 | Bytes received so far |
+| `bytes_total` | int64 | Total size (0 if unknown) |
+| `created_at` | RFC3339 | When the job was enqueued |
+| `done_at` | RFC3339\|null | When the job finished (`null` if still running) |
+| `error` | string | Error message (non-empty only on `failed`) |
+| `last_progress` | RFC3339 | Timestamp of the last progress update |
 
 ## Agent integration
 
@@ -383,7 +494,7 @@ When `--target` is omitted from `model-shelf pull`, smart placement auto-selects
 
 1. **Estimate VRAM** — queries the HF API for file sizes (without downloading). GGUF: file_size × 1.1; safetensors/mlx: sum of weight files × 1.1.
 2. **Filter** — finds all online Executor nodes where total VRAM ≥ estimated requirement.
-3. **Rank** — prefers Executors that already have the model on disk, then most free disk space.
+3. **Rank** — prefers Executors that already have the model on disk, then most free disk space, then fewest active jobs (as a tiebreaker to avoid piling new pulls onto a node that is already busy).
 4. **Error** — if no Executor can fit the model, returns a clear error listing available VRAM vs. what's needed.
 
 With `--json`, the response includes a `placement` field showing the selected node and reason.
