@@ -295,7 +295,7 @@ model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --config /path/to/confi
 # Print the installed version
 model-shelf version
 
-# Upgrade the binary to the latest GitHub release
+# Upgrade the binary to the latest GitHub release (standalone or mesh controller)
 model-shelf upgrade
 
 # Pin to a specific release
@@ -306,17 +306,89 @@ model-shelf upgrade --yes
 
 # Reinstall the same version (useful to repair a broken binary)
 model-shelf upgrade --force
+
+# Controller mesh upgrade with JSON output
+model-shelf upgrade --json
 ```
 
 ### Upgrade
 
 `model-shelf upgrade` fetches the latest release from GitHub, verifies the SHA256 checksum against the published `checksums.txt`, saves the current binary as `<binary-path>.bak`, and atomically replaces the running binary. If the daemon service is installed it is restarted automatically; otherwise a reminder is printed.
 
+**Standalone mode** (no mesh config, or non-controller node):
+
+```bash
+# Upgrade to the latest release
+model-shelf upgrade
+
+# Pin to a specific release
+model-shelf upgrade --version 0.5.9
+
+# Skip the confirmation prompt
+model-shelf upgrade --yes
+
+# Reinstall even if already at the target version
+model-shelf upgrade --force
+```
+
+**Mesh mode** (Controller node with a running daemon): when `model-shelf upgrade` is run on a Controller node, it orchestrates a rolling upgrade across the entire mesh:
+
+1. Reads current version of each node from gossip state
+2. Prints a confirmation table and prompts (unless `--yes`)
+3. Fans out `POST /v1/upgrade` to all reachable peers in parallel
+4. Polls `GET /v1/health` on each peer every 2 s (up to 60 s) until the peer reports the new version
+5. Self-upgrades the controller last
+
+```bash
+# Mesh upgrade — controller fans out to all peers then upgrades itself
+model-shelf upgrade
+
+# Skip confirmation
+model-shelf upgrade --yes
+
+# Emit structured JSON result
+model-shelf upgrade --json
+```
+
+Example confirmation table:
+
+```
+  node-a  0.5.9 → 0.6.0   will upgrade
+  node-b  0.5.9 → 0.6.0   will upgrade
+  node-c  unknown          offline — will skip
+
+Upgrade 2 node(s) to v0.6.0? [y/N]
+```
+
+Example progress output:
+
+```
+  ✓ node-a  upgraded → 0.6.0  (9s)
+  ✓ node-b  upgraded → 0.6.0  (12s)
+  ✗ node-c  offline — skipped
+```
+
+`--json` output:
+
+```json
+{
+  "target_version": "0.6.0",
+  "nodes": [
+    {"name": "node-a", "status": "upgraded", "elapsed_seconds": 9},
+    {"name": "node-b", "status": "upgraded", "elapsed_seconds": 12},
+    {"name": "node-c", "status": "skipped", "reason": "offline"}
+  ]
+}
+```
+
+Offline nodes are skipped with a warning. A peer that does not return within 60 s is reported as `"failed"` — the controller still self-upgrades.
+
 ```
 Flags:
   --version <x.y.z>  Pin upgrade to a specific release (default: latest)
   --yes              Skip the confirmation prompt
   --force            Proceed even if the binary is already at the target version
+  --json             Emit structured JSON result (mesh mode only)
 ```
 
 Exit codes: `0` on found/downloaded, `1` on missing (not found anywhere), `2` on missing locally but available on a mesh peer (actionable — run `pull`).
