@@ -116,3 +116,4 @@ func TestCmdService_Help(t *testing.T) {
 		t.Errorf("expected 'stop + start' description in service help, got:\n%s", output)
 	}
 }
+
