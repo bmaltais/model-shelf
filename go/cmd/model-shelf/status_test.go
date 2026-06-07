@@ -572,3 +572,140 @@ func TestCmdStatus_NoMeshDefault_StoreOnly(t *testing.T) {
 func timePtr(t time.Time) *time.Time {
 	return &t
 }
+
+// TestCmdStatus_SingleJob_JSON_ErrorFieldAlwaysPresent verifies that the "error"
+// field is always present in status --json output even when the job succeeded (#213).
+func TestCmdStatus_SingleJob_JSON_ErrorFieldAlwaysPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	done := now.Add(-5 * time.Minute)
+	job := daemon.Job{
+		ID:              "completed123abc",
+		Type:            daemon.JobTypeDownload,
+		RepoID:          "ggml-org/Qwen3-0.6B-GGUF",
+		Format:          "gguf",
+		Quant:           "Q4_0",
+		Target:          "mini2",
+		Status:          daemon.JobCompleted,
+		BytesDownloaded: 428_970_080,
+		BytesTotal:      428_970_080,
+		CreatedAt:       now.Add(-10 * time.Minute),
+		DoneAt:          &done,
+		// Error intentionally empty (success case).
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(job)
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdStatus([]string{"completed123abc", "--json"})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d (output: %s)", code, out)
+	}
+
+	// Unmarshal as raw map to verify key presence regardless of value.
+	var result map[string]interface{}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("expected valid JSON, got: %s (parse error: %v)", out, err)
+	}
+
+	if _, ok := result["error"]; !ok {
+		t.Errorf("expected 'error' key always present in JSON output, but it was absent; output: %s", out)
+	}
+	if result["error"] != "" {
+		t.Errorf("expected error=\"\" for successful job, got %q", result["error"])
+	}
+}
+
+// TestCmdStatus_AllJobs_JSON_ErrorFieldAlwaysPresent verifies that all jobs in
+// the array output include the "error" field (#213).
+func TestCmdStatus_AllJobs_JSON_ErrorFieldAlwaysPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	done := now.Add(-5 * time.Minute)
+	jobs := []daemon.Job{
+		{
+			ID:        "success123",
+			Type:      daemon.JobTypeDownload,
+			RepoID:    "org/model-a",
+			Format:    "gguf",
+			Target:    "node1",
+			Status:    daemon.JobCompleted,
+			CreatedAt: now.Add(-10 * time.Minute),
+			DoneAt:    &done,
+		},
+		{
+			ID:        "failed456",
+			Type:      daemon.JobTypeDownload,
+			RepoID:    "org/model-b",
+			Format:    "gguf",
+			Target:    "node2",
+			Status:    daemon.JobFailed,
+			Error:     "connection refused",
+			CreatedAt: now.Add(-8 * time.Minute),
+			DoneAt:    &done,
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(jobs)
+	}))
+	defer server.Close()
+
+	writeMeshConfig(t, home, server)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdStatus([]string{"--json", "--local"})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d (output: %s)", code, out)
+	}
+
+	var results []map[string]interface{}
+	if err := json.Unmarshal(out, &results); err != nil {
+		t.Fatalf("expected valid JSON array, got: %s (parse error: %v)", out, err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d: %s", len(results), out)
+	}
+
+	// Both jobs must have the "error" key.
+	for i, result := range results {
+		if _, ok := result["error"]; !ok {
+			t.Errorf("job %d: expected 'error' key present, but it was absent; job: %v", i, result)
+		}
+	}
+	// Success job: error must be empty string.
+	if results[0]["error"] != "" {
+		t.Errorf("success job: expected error=\"\", got %q", results[0]["error"])
+	}
+	// Failed job: error must be non-empty.
+	if results[1]["error"] == "" {
+		t.Errorf("failed job: expected non-empty error, got empty string")
+	}
+}
