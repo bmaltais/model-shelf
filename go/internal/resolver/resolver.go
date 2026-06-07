@@ -579,6 +579,11 @@ func resolveGGUF(cfg *Config, repoID, quant string) (*ResolveResult, error) {
 	url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, hfName)
 	if err := downloadFile(url, finalPath); err != nil {
 		cleanupOnFailure(dir, dirExisted)
+		if strings.HasPrefix(err.Error(), "HTTP 404") {
+			if clarified := clarifyMissingGGUFQuant(repoID, quant); clarified != nil {
+				return nil, fmt.Errorf("download failed: %w", clarified)
+			}
+		}
 		return nil, fmt.Errorf("download failed: %w", err)
 	}
 
@@ -823,6 +828,84 @@ func clarify401(fileURL string) error {
 		// Unexpected status (429, 5xx, etc.) — fall back to original context.
 		return fmt.Errorf("HTTP 401 for %s (probe returned %d)", fileURL, headResp.StatusCode)
 	}
+}
+
+// clarifyMissingGGUFQuant returns a user-friendly error when a GGUF quant is
+// not present in the repo. It queries the HF API for available .gguf files and
+// lists the quants it finds.  Returns nil if the HF API is unreachable.
+func clarifyMissingGGUFQuant(repoID, quant string) error {
+	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s", repoID)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil
+	}
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if token := os.Getenv("HUGGING_FACE_HUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var repoInfo struct {
+		Siblings []hfRepoFile `json:"siblings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
+		return nil
+	}
+
+	var quants []string
+	seen := make(map[string]bool)
+	for _, f := range repoInfo.Siblings {
+		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
+			continue
+		}
+		q := ggufQuantLabel(f.Filename)
+		if q != "" && !seen[q] {
+			quants = append(quants, q)
+			seen[q] = true
+		}
+	}
+
+	msg := fmt.Sprintf("quant %q not found in %s", quant, repoID)
+	if len(quants) > 0 {
+		msg += "\navailable quants: " + strings.Join(quants, ", ")
+		msg += fmt.Sprintf("\nhint: use `model-shelf find %q` to discover repos with your desired quant", ggufSearchHint(repoID))
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+// ggufQuantLabel extracts the quantization label from a GGUF filename by
+// returning the last dash- or dot-separated segment before .gguf.
+func ggufQuantLabel(filename string) string {
+	base := filename
+	if strings.HasSuffix(strings.ToLower(base), ".gguf") {
+		base = base[:len(base)-5]
+	}
+	for i := len(base) - 1; i >= 0; i-- {
+		if base[i] == '-' || base[i] == '.' {
+			return base[i+1:]
+		}
+	}
+	return base
+}
+
+// ggufSearchHint builds a human-readable model name from a repo ID for use in
+// a `model-shelf find` hint.  E.g. "ggml-org/Qwen3-0.6B-GGUF" → "Qwen3 0.6B".
+func ggufSearchHint(repoID string) string {
+	parts := strings.SplitN(repoID, "/", 2)
+	name := parts[len(parts)-1]
+	if strings.HasSuffix(strings.ToLower(name), "-gguf") {
+		name = name[:len(name)-5]
+	}
+	return strings.ReplaceAll(name, "-", " ")
 }
 
 // extractRepoID extracts "owner/repo" from a HuggingFace file URL.

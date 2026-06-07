@@ -3,6 +3,7 @@ package daemon
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -251,6 +252,46 @@ func TestSelectExecutor_CPUOnlyNodeWithoutModel(t *testing.T) {
 	}
 	if result.Target != "gpu-node" {
 		t.Errorf("expected gpu-node (cpu-node has no VRAM and no model), got %s", result.Target)
+	}
+}
+
+func TestSelectExecutor_AllCPUOnlyFallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// All executor nodes are CPU-only — should fall back to disk-space ranking
+	// instead of blocking with a VRAM error. (#186)
+	nodes := []MeshNode{
+		{Name: "cpu-small", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 100, GPU: nil},
+		{Name: "cpu-big", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 500, GPU: nil},
+	}
+
+	result, err := SelectExecutor(nodes, 10.0, "unsloth/Qwen3-1.7B-GGUF", "gguf", "Q4_K_M", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error on all-CPU-only mesh: %v", err)
+	}
+	if result.Target != "cpu-big" {
+		t.Errorf("expected cpu-big (most free disk), got %s", result.Target)
+	}
+}
+
+func TestSelectExecutor_AllCPUOnlyHint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// When VRAM placement fails, the error should include a --target hint.
+	nodes := []MeshNode{
+		{Name: "exec-1", Roles: []string{"executor"}, Status: StatusOnline,
+			DiskFreeGB: 100,
+			GPU:        &GPUInfo{Name: "RTX 3060", VRAMTotalGB: 4.0, VRAMAvailableGB: 3.0}},
+	}
+
+	_, err := SelectExecutor(nodes, 20.0, "test/model", "gguf", "Q4_K_M", nil, nil)
+	if err == nil {
+		t.Fatal("expected error when no executor has sufficient VRAM")
+	}
+	if !strings.Contains(err.Error(), "--target") {
+		t.Errorf("expected --target hint in error, got: %s", err.Error())
 	}
 }
 

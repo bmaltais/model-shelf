@@ -30,6 +30,7 @@ func (e *PlacementError) Error() string {
 	for _, c := range e.Candidates {
 		lines = append(lines, fmt.Sprintf("  %s: %.1f GB total VRAM", c.Name, c.VRAMTotalGB))
 	}
+	lines = append(lines, "hint: use --target <node> to select a destination explicitly")
 	return strings.Join(lines, "\n")
 }
 
@@ -226,6 +227,18 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 	// Step 2: Filter by VRAM capacity.
 	// Only Executor nodes are considered. Nodes that already have the model on
 	// disk bypass the VRAM check (CPU inference), but NOT the role check.
+	//
+	// Exception: when ALL executors are CPU-only (no GPU detected), skip VRAM
+	// gating entirely and fall back to disk-space ranking. This handles home-lab
+	// meshes where nvidia-smi / sysctl report no GPU.
+	allCPUOnly := true
+	for _, n := range executors {
+		if n.GPU != nil && n.GPU.VRAMTotalGB > 0 {
+			allCPUOnly = false
+			break
+		}
+	}
+
 	var candidates []struct {
 		Node       MeshNode
 		HasModel   bool
@@ -241,7 +254,7 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 		// Check if this node already has the model.
 		hasModel := nodeHasModel(inventoryByNode[n.Name], repoID, format, quant)
 
-		if vramTotal < estimatedVRAMGB && !hasModel {
+		if !allCPUOnly && vramTotal < estimatedVRAMGB && !hasModel {
 			insufficientCandidates = append(insufficientCandidates, PlacementCandidate{
 				Name:        n.Name,
 				VRAMTotalGB: vramTotal,
