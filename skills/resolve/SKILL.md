@@ -36,7 +36,10 @@ model-shelf resolve <repo_id> [--format gguf|mlx|safetensors] [--quant <QUANT>] 
 
 - `--format` is auto-detected from `repo_id` if omitted.
 - `--quant` is **required for gguf**; ignored otherwise.
-- Returns `{"status": "found"|"downloaded"|"missing", "path": "..."}`.
+- Returns JSON with the following fields:
+  - `status`: `"found"` (already local), `"downloaded"` (just fetched), `"missing"` (not found anywhere, exit 1), or `"missing_locally"` (exists on a mesh peer but not locally, exit 2).
+  - `path`: absolute path to the model file (present when status is `found` or `downloaded`).
+  - `mesh_available`: array of peer locations that have the model (present when `status == "missing_locally"`).
 
 ### 3. Pull (async, mesh-aware — places model on a node)
 
@@ -60,7 +63,9 @@ model-shelf pull <repo_id> [--format F] [--quant Q] --target <node> --json
 ### 4. Check status of in-flight operations
 
 ```bash
-model-shelf status --json
+model-shelf status --json           # aggregate from all mesh nodes (default)
+model-shelf status --mesh --json    # explicitly aggregate across all nodes
+model-shelf status --local --json   # local node only
 model-shelf status <job_id> --json
 ```
 
@@ -81,12 +86,14 @@ configure nodes.
 # First node (bootstraps mesh, generates mesh key)
 model-shelf init --role controller,store --shelf /path/to/models
 
-# Subsequent nodes (joins existing mesh)
-model-shelf init --role store,executor --shelf /data/models --join <peer_node>
+# Subsequent nodes — init first, then join
+model-shelf init --role store,executor --shelf /data/models
+model-shelf join <peer_node>
 ```
 
 `--shelf` is required — the user must specify where models are stored.
 `--role` accepts: controller, store, executor (comma-separated, combinable).
+`init` does not accept a `--join` flag; use `model-shelf join` as a separate step.
 
 ### Join an existing mesh (if init was done standalone)
 
@@ -121,8 +128,10 @@ model-shelf role remove store
 ### Service management
 
 ```bash
+model-shelf service install    # install and enable (auto-starts on login)
 model-shelf service start
 model-shelf service stop
+model-shelf service restart    # stop + start (required after config changes)
 model-shelf service uninstall
 ```
 
@@ -181,5 +190,6 @@ You:  model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
 Mesh admin:
 ```
 User: "set up this machine as a storage node and join the mesh"
-You:  model-shelf init --role store --shelf /data/models --join mini1
+You:  model-shelf init --role store --shelf /data/models
+      model-shelf join mini1
 ```
