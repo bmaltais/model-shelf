@@ -218,4 +218,16 @@ func TestCmdRole_Help(t *testing.T) {
 	}
 }
 
+func TestCmdRole_SubcommandHelp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, action := range []string{"set", "add", "remove"} {
+		for _, flag := range []string{"--help", "-h"} {
+			code := cmdRole([]string{action, flag})
+			if code != 0 {
+				t.Errorf("role %s %s: expected exit 0, got %d", action, flag, code)
+			}
+		}
+	}
+}
+
 

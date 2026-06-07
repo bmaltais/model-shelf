@@ -461,6 +461,33 @@ func TestCmdInventory_DaemonNotRunning(t *testing.T) {
 	}
 }
 
+func TestSortInventoryRows(t *testing.T) {
+	rows := []InventoryRow{
+		{Node: "node2", Format: "mlx", RepoID: "b/model"},
+		{Node: "node1", Format: "safetensors", RepoID: "a/model"},
+		{Node: "node1", Format: "gguf", RepoID: "z/model"},
+		{Node: "node1", Format: "mlx", RepoID: "b/model"},
+		{Node: "node1", Format: "gguf", RepoID: "a/model"},
+		{Node: "node2", Format: "gguf", RepoID: "a/model"},
+	}
+	sortInventoryRows(rows)
+
+	want := []InventoryRow{
+		{Node: "node1", Format: "gguf", RepoID: "a/model"},
+		{Node: "node1", Format: "gguf", RepoID: "z/model"},
+		{Node: "node1", Format: "mlx", RepoID: "b/model"},
+		{Node: "node1", Format: "safetensors", RepoID: "a/model"},
+		{Node: "node2", Format: "gguf", RepoID: "a/model"},
+		{Node: "node2", Format: "mlx", RepoID: "b/model"},
+	}
+	for i, r := range rows {
+		if r.Node != want[i].Node || r.Format != want[i].Format || r.RepoID != want[i].RepoID {
+			t.Errorf("row %d: got {%s %s %s}, want {%s %s %s}",
+				i, r.Node, r.Format, r.RepoID, want[i].Node, want[i].Format, want[i].RepoID)
+		}
+	}
+}
+
 // parseTestServerAddr extracts host and port from a test server URL like "http://127.0.0.1:12345".
 func parseTestServerAddr(t *testing.T, url string) (string, int) {
 	t.Helper()
