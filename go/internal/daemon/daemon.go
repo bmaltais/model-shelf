@@ -140,6 +140,18 @@ func (d *Daemon) Run() error {
 	addr := fmt.Sprintf(":%d", d.cfg.Port)
 	d.server = &http.Server{
 		Handler: handler,
+		// Raise OS-level TCP send buffer (SO_SNDBUF) on new connections so the
+		// server can keep the pipe full when a peer receiver has a large window.
+		// Only the send buffer matters here: this node only sends model files;
+		// incoming requests are small. SO_RCVBUF is enlarged on the client side
+		// in transferFromPeer's DialContext instead.
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				if tc, ok := conn.(*net.TCPConn); ok {
+					_ = tc.SetWriteBuffer(transferSocketBufSize)
+				}
+			}
+		},
 	}
 
 	// Bind the port before logging — ensures "listening" only prints on success.
