@@ -78,6 +78,20 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Dedup: if an identical active job already exists and --force is not set, return it.
+	if !req.Force {
+		if existing := d.jobs.FindActive(req.RepoID, format, req.Quant, d.cfg.Name); existing != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(PullResponse{
+				JobID:  existing.ID,
+				Status: JobAlreadyInProgress,
+				Target: d.cfg.Name,
+			})
+			return
+		}
+	}
+
 	// Create job and start background download.
 	job := d.jobs.Create(req.RepoID, format, req.Quant, d.cfg.Name)
 	jobID := job.ID
