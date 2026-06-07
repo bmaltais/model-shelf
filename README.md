@@ -294,6 +294,29 @@ model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --config /path/to/confi
 
 # Print the installed version
 model-shelf version
+
+# Upgrade the binary to the latest GitHub release
+model-shelf upgrade
+
+# Pin to a specific release
+model-shelf upgrade --version 0.5.9
+
+# Skip confirmation prompt
+model-shelf upgrade --yes
+
+# Reinstall the same version (useful to repair a broken binary)
+model-shelf upgrade --force
+```
+
+### Upgrade
+
+`model-shelf upgrade` fetches the latest release from GitHub, verifies the SHA256 checksum against the published `checksums.txt`, saves the current binary as `<binary-path>.bak`, and atomically replaces the running binary. If the daemon service is installed it is restarted automatically; otherwise a reminder is printed.
+
+```
+Flags:
+  --version <x.y.z>  Pin upgrade to a specific release (default: latest)
+  --yes              Skip the confirmation prompt
+  --force            Proceed even if the binary is already at the target version
 ```
 
 Exit codes: `0` on found/downloaded, `1` on missing (not found anywhere), `2` on missing locally but available on a mesh peer (actionable — run `pull`).
