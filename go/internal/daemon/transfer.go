@@ -112,10 +112,24 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Serve the model.
 	if format == "gguf" {
-		// GGUF is a single file — serve directly.
+		// GGUF is a single file. Serve with a large copy buffer instead of
+		// http.ServeFile (which uses a 32KB pool buffer) to reduce syscall
+		// overhead ~32x on fast LANs.
+		f, openErr := os.Open(shelfPath)
+		if openErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to open model file"})
+			return
+		}
+		defer f.Close()
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(shelfPath)))
-		http.ServeFile(w, r, shelfPath)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+		buf := make([]byte, transferBufferSize)
+		if _, err := io.CopyBuffer(w, f, buf); err != nil {
+			log.Printf("transfer: gguf stream error for %s: %v", shelfPath, err)
+		}
 	} else {
 		// Snapshot format (mlx/safetensors) — stream as tar archive.
 		if !info.IsDir() || !looksLikeModelDir(shelfPath) {
@@ -316,8 +330,9 @@ func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format
 	// fast LANs — the default net/http transport uses 4KB reads which causes
 	// excessive context switches during large file transfers.
 	transport := &http.Transport{
-		ReadBufferSize:  transferBufferSize,
-		WriteBufferSize: transferBufferSize,
+		ReadBufferSize:     transferBufferSize,
+		WriteBufferSize:    transferBufferSize,
+		DisableCompression: true,
 	}
 	client := &http.Client{Timeout: 0, Transport: transport} // No timeout for large transfers.
 	resp, err := client.Do(req)
