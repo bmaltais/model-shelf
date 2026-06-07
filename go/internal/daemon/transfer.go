@@ -400,14 +400,22 @@ func (d *Daemon) transferGGUF(jobID string, body io.Reader, totalBytes int64, re
 }
 
 // transferSnapshot downloads a tar archive from the response body and extracts it.
+// Uses a dot-prefixed staging directory to prevent incomplete models from appearing
+// in inventory scans. Only renames to the final path on successful completion.
 func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64, repoID, format string) error {
 	destDir, err := resolver.ShelfPathSnapshot(d.cfg.ShelfRoot, repoID, format)
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("creating directory: %w", err)
+	// Use a dot-prefixed staging directory (ScanShelf skips dot-prefixed dirs).
+	stagingDir := filepath.Join(filepath.Dir(destDir), "."+filepath.Base(destDir)+".transferring")
+
+	// Clean up any prior failed staging attempt.
+	os.RemoveAll(stagingDir)
+
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return fmt.Errorf("creating staging directory: %w", err)
 	}
 
 	// Track bytes read for progress.
@@ -422,14 +430,14 @@ func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64
 		}
 		if err != nil {
 			// Clean up on failure.
-			os.RemoveAll(destDir)
+			os.RemoveAll(stagingDir)
 			return fmt.Errorf("reading tar: %w", err)
 		}
 
-		targetPath := filepath.Join(destDir, header.Name)
+		targetPath := filepath.Join(stagingDir, header.Name)
 
 		// Security: prevent path traversal using filepath.Rel.
-		rel, relErr := filepath.Rel(destDir, filepath.Clean(targetPath))
+		rel, relErr := filepath.Rel(stagingDir, filepath.Clean(targetPath))
 		if relErr != nil || strings.HasPrefix(rel, "..") {
 			continue
 		}
@@ -437,26 +445,35 @@ func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(targetPath, 0o755); err != nil {
-				os.RemoveAll(destDir)
+				os.RemoveAll(stagingDir)
 				return err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-				os.RemoveAll(destDir)
+				os.RemoveAll(stagingDir)
 				return err
 			}
 			f, err := os.Create(targetPath)
 			if err != nil {
-				os.RemoveAll(destDir)
+				os.RemoveAll(stagingDir)
 				return err
 			}
 			if _, err := io.CopyBuffer(f, tr, buf); err != nil {
 				f.Close()
-				os.RemoveAll(destDir)
+				os.RemoveAll(stagingDir)
 				return fmt.Errorf("extracting %s: %w", header.Name, err)
 			}
 			f.Close()
 		}
+	}
+
+	// Remove any existing destination (stale/incomplete from prior attempts).
+	os.RemoveAll(destDir)
+
+	// Atomic rename from staging to final path.
+	if err := os.Rename(stagingDir, destDir); err != nil {
+		os.RemoveAll(stagingDir)
+		return fmt.Errorf("finalizing snapshot transfer: %w", err)
 	}
 
 	return nil

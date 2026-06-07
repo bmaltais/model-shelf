@@ -360,3 +360,100 @@ func TestInventory_ScanShelf_PicksUpExternallyAdded(t *testing.T) {
 		t.Errorf("expected size 200, got %d", entries[0].SizeBytes)
 	}
 }
+
+func TestHandleInventoryRescan(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelf := t.TempDir()
+	os.MkdirAll(filepath.Join(shelf, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelf, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelf, "safetensors"), 0o755)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelf,
+	}
+	d := New(cfg)
+
+	// Verify initial inventory is empty.
+	if len(d.inventory.Entries()) != 0 {
+		t.Fatalf("expected empty inventory initially")
+	}
+
+	// Simulate a model added externally (e.g. by resolve download).
+	ggufDir := filepath.Join(shelf, "gguf", "unsloth", "Qwen3-0.6B-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-0.6B-Q4_K_M.gguf"), make([]byte, 500), 0o644)
+
+	// Before rescan, inventory should still be empty (daemon hasn't noticed).
+	if len(d.inventory.Entries()) != 0 {
+		t.Fatalf("expected empty inventory before rescan")
+	}
+
+	// POST /v1/inventory/rescan should trigger immediate update.
+	req := httptest.NewRequest(http.MethodPost, "/v1/inventory/rescan", nil)
+	w := httptest.NewRecorder()
+	d.handleInventoryRescan(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Inventory should now reflect the new model.
+	entries := d.inventory.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry after rescan, got %d", len(entries))
+	}
+	if entries[0].RepoID != "unsloth/Qwen3-0.6B-GGUF" {
+		t.Errorf("expected repo_id unsloth/Qwen3-0.6B-GGUF, got %q", entries[0].RepoID)
+	}
+}
+
+func TestHandleInventoryRescan_MethodNotAllowed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{Name: "test", Port: 8844, Roles: []string{"store"}, ShelfRoot: t.TempDir()}
+	d := New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/inventory/rescan", nil)
+	w := httptest.NewRecorder()
+	d.handleInventoryRescan(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestInventory_ScanSkipsDotPrefixedDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelf := t.TempDir()
+	os.MkdirAll(filepath.Join(shelf, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelf, "safetensors"), 0o755)
+
+	// Create a complete MLX model.
+	mlxDir := filepath.Join(shelf, "mlx", "mlx-community", "Qwen3-0.6B-4bit")
+	os.MkdirAll(mlxDir, 0o755)
+	os.WriteFile(filepath.Join(mlxDir, "config.json"), []byte("{}"), 0o644)
+
+	// Create a dot-prefixed staging directory (simulates in-progress transfer).
+	stagingDir := filepath.Join(shelf, "mlx", "mlx-community", ".Qwen3-1.7B-4bit.transferring")
+	os.MkdirAll(stagingDir, 0o755)
+	os.WriteFile(filepath.Join(stagingDir, "config.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(stagingDir, "model.safetensors"), make([]byte, 1000), 0o644)
+
+	inv := NewInventory()
+	if err := inv.ScanShelf(shelf); err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	entries := inv.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (staging excluded), got %d", len(entries))
+	}
+	if entries[0].RepoID != "mlx-community/Qwen3-0.6B-4bit" {
+		t.Errorf("expected mlx-community/Qwen3-0.6B-4bit, got %q", entries[0].RepoID)
+	}
+}
