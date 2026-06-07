@@ -255,3 +255,107 @@ func TestCmdResolve_MeshPeersQueried(t *testing.T) {
 		t.Errorf("expected mesh_available[0].path to start with 'gguf/bartowski/', got %q", result.MeshAvailable[0].Path)
 	}
 }
+
+// TestCmdResolve_MLXPeerReturnsMissingLocally verifies that resolve for an MLX model
+// available on a mesh peer returns missing_locally without attempting a blocking inline
+// pull. Directory-based transfers (MLX/safetensors) are expensive; resolve should
+// report the peer and suggest using `pull` instead.
+func TestCmdResolve_MLXPeerReturnsMissingLocally(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = true\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Peer inventory reports an MLX model.
+	peerInventory := []daemon.InventoryEntry{
+		{RepoID: "mlx-community/Qwen3-0.6B-4bit", Format: "mlx", SizeBytes: 336000000},
+	}
+
+	peerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	peerPort := peerLn.Addr().(*net.TCPAddr).Port
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	daemonPort := ln.Addr().(*net.TCPAddr).Port
+
+	nodesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/nodes":
+			nodes := []daemon.MeshNode{
+				{Name: "self-node", Address: "127.0.0.1", Port: daemonPort, Status: daemon.StatusOnline},
+				{Name: "mini1", Address: "127.0.0.1", Port: peerPort, Status: daemon.StatusOnline},
+			}
+			json.NewEncoder(w).Encode(nodes)
+		case "/v1/inventory":
+			json.NewEncoder(w).Encode(peerInventory)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	peerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/inventory":
+			json.NewEncoder(w).Encode(peerInventory)
+		default:
+			// Download endpoint deliberately not implemented — should not be called.
+			t.Errorf("unexpected request to peer: %s %s (inline pull should be skipped for MLX)", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+
+	daemonServer := &httptest.Server{Listener: ln, Config: &http.Server{Handler: nodesHandler}}
+	daemonServer.Start()
+	defer daemonServer.Close()
+
+	peerServer := &httptest.Server{Listener: peerLn, Config: &http.Server{Handler: peerHandler}}
+	peerServer.Start()
+	defer peerServer.Close()
+
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := "name = \"self-node\"\nport = " + strings.Replace(ln.Addr().String(), "127.0.0.1:", "", 1) + "\nroles = [\"store\"]\nshelf_root = \"" + shelfRoot + "\"\n"
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdResolve([]string{"mlx-community/Qwen3-0.6B-4bit", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+
+	// Should exit 1 (missing locally) — not block or hang.
+	if code != 1 {
+		t.Errorf("expected exit code 1 (missing_locally), got %d", code)
+	}
+
+	var result resolver.ResolveResult
+	if err := json.Unmarshal(outBytes, &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v\noutput: %s", err, outBytes)
+	}
+	if result.Status != "missing_locally" {
+		t.Errorf("expected status 'missing_locally', got %q", result.Status)
+	}
+	if result.Source != "mesh" {
+		t.Errorf("expected source 'mesh', got %q", result.Source)
+	}
+	if len(result.MeshAvailable) == 0 {
+		t.Error("expected mesh_available to contain entries")
+	}
+}

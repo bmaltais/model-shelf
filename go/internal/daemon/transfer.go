@@ -124,9 +124,20 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": "model directory not found or incomplete"})
 			return
 		}
+		// Pre-calculate the exact archive size so the receiver knows bytes_total
+		// and the response uses a fixed-length body instead of chunked encoding.
+		// Chunked encoding without explicit flushing can stall mid-stream on the
+		// trailing chunk marker when large files are transferred.
+		if tarSize, err := tarredSize(shelfPath); err == nil {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", tarSize))
+		} else {
+			log.Printf("transfer: failed to calculate tar size for %s: %v", shelfPath, err)
+		}
 		w.Header().Set("Content-Type", "application/x-tar")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s.tar", publisher, repo))
-		streamTarDirectory(w, shelfPath)
+		if err := streamTarDirectory(w, shelfPath); err != nil {
+			log.Printf("transfer: tar stream error for %s: %v", shelfPath, err)
+		}
 	}
 }
 
@@ -138,18 +149,17 @@ func resolveShelfPath(shelfRoot, format, repoID, quant string) (string, error) {
 	return resolver.ShelfPathSnapshot(shelfRoot, repoID, format)
 }
 
-// streamTarDirectory streams a directory as a tar archive to the HTTP response.
+// streamTarDirectory streams a directory as a tar archive to w.
 // Only regular files are included; symlinks and other special files are skipped.
-func streamTarDirectory(w io.Writer, dir string) {
+// Returns the first error encountered during walking or writing.
+func streamTarDirectory(w io.Writer, dir string) error {
 	tw := tar.NewWriter(w)
-	defer tw.Close()
-
 	buf := make([]byte, transferBufferSize)
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+
+	if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		// Skip directories, symlinks, and non-regular files.
 		if !info.Mode().IsRegular() {
 			return nil
 		}
@@ -159,7 +169,6 @@ func streamTarDirectory(w io.Writer, dir string) {
 			return err
 		}
 
-		// Store the relative path inside the archive.
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
 			return err
@@ -177,7 +186,34 @@ func streamTarDirectory(w io.Writer, dir string) {
 		_, copyErr := io.CopyBuffer(tw, f, buf)
 		f.Close()
 		return copyErr
+	}); err != nil {
+		tw.Close()
+		return err
+	}
+	return tw.Close()
+}
+
+// tarredSize calculates the exact byte count of a tar archive of dir.
+// Each regular file contributes a 512-byte header block plus the file's data
+// rounded up to the next 512-byte boundary. The archive ends with 1024 zero bytes.
+func tarredSize(dir string) (int64, error) {
+	var total int64
+	err := filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		total += 512                        // tar header block
+		total += (info.Size() + 511) &^ 511 // file data padded to 512-byte boundary
+		return nil
 	})
+	if err != nil {
+		return 0, err
+	}
+	total += 1024 // two 512-byte end-of-archive zero blocks
+	return total, nil
 }
 
 const (
