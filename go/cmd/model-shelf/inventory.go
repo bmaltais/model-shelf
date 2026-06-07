@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"golang.org/x/term"
@@ -57,6 +58,7 @@ func cmdInventory(args []string) int {
 
 	// Aggregate inventory from all nodes.
 	rows := aggregateInventory(nodes, cfg)
+	sortInventoryRows(rows)
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -161,6 +163,33 @@ func fetchNodeInventory(node daemon.MeshNode, cfg *meshconfig.Config) ([]daemon.
 		return nil, true
 	}
 	return entries, false
+}
+
+func formatOrder(format string) int {
+	switch format {
+	case "gguf":
+		return 0
+	case "mlx":
+		return 1
+	case "safetensors":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func sortInventoryRows(rows []InventoryRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.Node != b.Node {
+			return a.Node < b.Node
+		}
+		fa, fb := formatOrder(a.Format), formatOrder(b.Format)
+		if fa != fb {
+			return fa < fb
+		}
+		return a.RepoID < b.RepoID
+	})
 }
 
 func printInventoryTable(rows []InventoryRow) {

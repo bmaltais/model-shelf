@@ -38,6 +38,13 @@ func cmdRole(args []string) int {
 		return 1
 	}
 
+	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+		fmt.Printf("Usage: model-shelf role %s <roles>\n", action)
+		fmt.Println()
+		fmt.Println("Roles are comma-separated: controller,store,executor")
+		return 0
+	}
+
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "error: roles argument is required\n")
 		fmt.Fprintf(os.Stderr, "usage: model-shelf role %s <roles>\n", action)
