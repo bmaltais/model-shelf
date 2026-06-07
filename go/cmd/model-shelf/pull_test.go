@@ -372,14 +372,17 @@ func TestCmdPull_ErrorMessage_ConnectionRefused(t *testing.T) {
 	if !strings.Contains(errOutput, "dead-node") {
 		t.Errorf("error should mention target name, got: %s", errOutput)
 	}
-	if !strings.Contains(errOutput, "POST /v1/pull") {
-		t.Errorf("error should mention endpoint, got: %s", errOutput)
+	if strings.Contains(errOutput, "POST /v1/pull") {
+		t.Errorf("error should not expose internal endpoint, got: %s", errOutput)
+	}
+	if strings.Contains(errOutput, "127.0.0.1") || strings.Contains(errOutput, "dial tcp") {
+		t.Errorf("error should not expose raw TCP details, got: %s", errOutput)
 	}
 	if !strings.Contains(errOutput, "hint:") {
 		t.Errorf("error should include a hint for connection refused, got: %s", errOutput)
 	}
-	if !strings.Contains(errOutput, "daemon running") {
-		t.Errorf("hint should suggest checking if daemon is running, got: %s", errOutput)
+	if !strings.Contains(errOutput, "service status") {
+		t.Errorf("hint should suggest checking service status, got: %s", errOutput)
 	}
 }
 
@@ -389,7 +392,7 @@ func TestPullConnectionHint(t *testing.T) {
 		errMsg  string
 		wantSub string
 	}{
-		{"connection refused", "dial tcp 127.0.0.1:8844: connection refused", "daemon running"},
+		{"connection refused", "dial tcp 127.0.0.1:8844: connection refused", "service status"},
 		{"timeout", "context deadline exceeded", "unreachable or overloaded"},
 		{"no such host", "dial tcp: lookup badhost: no such host", "resolve hostname"},
 		{"no route", "dial tcp 10.0.0.99:8844: connect: no route to host", "no route"},

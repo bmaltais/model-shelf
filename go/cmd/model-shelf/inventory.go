@@ -15,6 +15,9 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
 
+// errDaemonNotRunning is the user-facing error when the local daemon is unreachable.
+const errDaemonNotRunning = "daemon not running — start with `model-shelf service start`"
+
 // InventoryRow is a single row in the inventory table output.
 type InventoryRow struct {
 	Node      string `json:"node"`
@@ -85,7 +88,7 @@ func fetchNodes(cfg *meshconfig.Config) ([]daemon.MeshNode, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("daemon not running — start with `model-shelf service start` (%v)", err)
+		return nil, fmt.Errorf("%s", errDaemonNotRunning)
 	}
 	defer resp.Body.Close()
 

@@ -160,14 +160,11 @@ func cmdPull(args []string) int {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		endpoint := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
 		if jsonMode {
-			emitPullError(jsonMode, fmt.Sprintf("pull failed — cannot reach target %q (%s) for POST /v1/pull: %v", target, endpoint, err))
+			emitPullError(jsonMode, fmt.Sprintf("cannot reach node %q — daemon may be offline", target))
 		} else {
-			hint := pullConnectionHint(err, target)
-			fmt.Fprintf(os.Stderr, "error: pull failed — cannot reach target %q (%s) for POST /v1/pull\n", target, endpoint)
-			fmt.Fprintf(os.Stderr, "  %v\n", err)
-			if hint != "" {
+			fmt.Fprintf(os.Stderr, "error: cannot reach node %q — daemon may be offline\n", target)
+			if hint := pullConnectionHint(err, target); hint != "" {
 				fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
 			}
 		}
@@ -272,7 +269,7 @@ func pullConnectionHint(err error, target string) string {
 	errStr := err.Error()
 	switch {
 	case strings.Contains(errStr, "connection refused"):
-		return fmt.Sprintf("is the daemon running on %s? check 'model-shelf service status' on %s", target, target)
+		return fmt.Sprintf("check 'model-shelf service status' on %s or run 'model-shelf nodes' to verify status", target)
 	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded"):
 		return fmt.Sprintf("target %s may be unreachable or overloaded", target)
 	case strings.Contains(errStr, "no such host"):

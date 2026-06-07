@@ -182,6 +182,9 @@ func TestCmdNodes_DaemonNotRunning(t *testing.T) {
 	if !strings.Contains(output, "daemon not running") {
 		t.Errorf("expected 'daemon not running' error, got: %s", output)
 	}
+	if strings.Contains(output, "127.0.0.1") || strings.Contains(output, "http://") {
+		t.Errorf("error must not expose raw URL or IP address, got: %s", output)
+	}
 }
 
 func TestCmdNodes_NoConfig(t *testing.T) {
