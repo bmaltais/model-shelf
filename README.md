@@ -313,7 +313,7 @@ When a model is missing locally but available on a mesh peer:
 
 ```json
 [
-  {"id": "abc123", "type": "transfer", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "target": "gpu-box-1", "source": "nas-store", "status": "transferring", "bytes_done": 4160000000, "bytes_total": 8320000000}
+  {"job_id": "abc123", "type": "transfer", "repo_id": "Qwen/Qwen3-14B-GGUF", "format": "gguf", "quant": "Q4_K_M", "target": "gpu-box-1", "source": "nas-store", "status": "transferring", "bytes_downloaded": 4160000000, "bytes_total": 8320000000}
 ]
 ```
 

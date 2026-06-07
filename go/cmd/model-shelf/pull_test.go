@@ -92,6 +92,136 @@ func TestCmdPull_GGUFRequiresQuant(t *testing.T) {
 	}
 }
 
+func TestCmdPull_JSONError_MissingRepoID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Capture stdout for JSON error output.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdPull([]string{"--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output, got: %s (parse error: %v)", out, err)
+	}
+	if errResp["error"] == "" {
+		t.Fatalf("expected non-empty error field in JSON, got: %s", out)
+	}
+}
+
+func TestCmdPull_JSONError_GGUFNoQuant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdPull([]string{"Qwen/Qwen3-14B-GGUF", "--target", "node1", "--format", "gguf", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output, got: %s (parse error: %v)", out, err)
+	}
+	if !strings.Contains(errResp["error"], "quant") {
+		t.Fatalf("expected error about quant, got: %s", errResp["error"])
+	}
+}
+
+func TestCmdPull_JSONError_NodeNotFound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write empty mesh state.
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), []byte("[]"), 0o644)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdPull([]string{"test/model", "--target", "nonexistent", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output, got: %s (parse error: %v)", out, err)
+	}
+	if !strings.Contains(errResp["error"], "nonexistent") {
+		t.Fatalf("expected error mentioning node name, got: %s", errResp["error"])
+	}
+}
+
+func TestCmdPull_JSONError_HTTPError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Start a fake target that returns 401.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	host := u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
+
+	stateDir := filepath.Join(home, ".model-shelf", "state")
+	os.MkdirAll(stateDir, 0o755)
+	nodes := []daemon.MeshNode{
+		{Name: "auth-node", Address: host, Port: port, Roles: []string{"store"}},
+	}
+	data, _ := json.Marshal(nodes)
+	os.WriteFile(filepath.Join(stateDir, "mesh.json"), data, 0o644)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdPull([]string{"mlx-community/test-model-mlx", "--target", "auth-node", "--json"})
+
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output, got: %s (parse error: %v)", out, err)
+	}
+	if errResp["error"] == "" {
+		t.Fatalf("expected non-empty error in JSON output, got: %s", out)
+	}
+}
+
 func TestCmdPull_NodeNotFound(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

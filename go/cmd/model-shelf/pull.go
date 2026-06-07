@@ -18,6 +18,7 @@ import (
 
 func cmdPull(args []string) int {
 	positional, flags := parseFlags(args)
+	jsonMode := flags["json"] == "true"
 
 	if flags["help"] == "true" {
 		fmt.Println("Usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--json]")
@@ -35,7 +36,7 @@ func cmdPull(args []string) int {
 	}
 
 	if len(positional) < 1 {
-		fmt.Fprintf(os.Stderr, "usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--json]\n")
+		emitPullError(jsonMode, "usage: model-shelf pull <repo_id> [--target <node>] [--quant Q] [--format F] [--json]")
 		return 1
 	}
 	repoID := positional[0]
@@ -56,13 +57,13 @@ func cmdPull(args []string) int {
 		}
 	}
 	if !valid {
-		fmt.Fprintf(os.Stderr, "error: unsupported format: %q\n", format)
+		emitPullError(jsonMode, fmt.Sprintf("unsupported format: %q", format))
 		return 1
 	}
 
 	quant := flags["quant"]
 	if format == "gguf" && quant == "" {
-		fmt.Fprintf(os.Stderr, "error: --quant is required for gguf format\n")
+		emitPullError(jsonMode, "--quant is required for gguf format")
 		return 1
 	}
 
@@ -71,7 +72,7 @@ func cmdPull(args []string) int {
 	if target == "" {
 		result, err := autoSelectTarget(repoID, format, quant)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			emitPullError(jsonMode, err.Error())
 			return 1
 		}
 		target = result.Target
@@ -81,7 +82,7 @@ func cmdPull(args []string) int {
 	// Look up the target node's address from mesh state.
 	addr, port, err := resolveTargetNode(target)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitPullError(jsonMode, err.Error())
 		return 1
 	}
 
@@ -96,14 +97,14 @@ func cmdPull(args []string) int {
 	}
 	body, err := json.Marshal(pullReq)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitPullError(jsonMode, err.Error())
 		return 1
 	}
 
 	url := fmt.Sprintf("http://%s/v1/pull", net.JoinHostPort(addr, fmt.Sprintf("%d", port)))
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitPullError(jsonMode, err.Error())
 		return 1
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -115,11 +116,15 @@ func cmdPull(args []string) int {
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		endpoint := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
-		hint := pullConnectionHint(err, target)
-		fmt.Fprintf(os.Stderr, "error: pull failed — cannot reach target %q (%s) for POST /v1/pull\n", target, endpoint)
-		fmt.Fprintf(os.Stderr, "  %v\n", err)
-		if hint != "" {
-			fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
+		if jsonMode {
+			emitPullError(jsonMode, fmt.Sprintf("pull failed — cannot reach target %q (%s) for POST /v1/pull: %v", target, endpoint, err))
+		} else {
+			hint := pullConnectionHint(err, target)
+			fmt.Fprintf(os.Stderr, "error: pull failed — cannot reach target %q (%s) for POST /v1/pull\n", target, endpoint)
+			fmt.Fprintf(os.Stderr, "  %v\n", err)
+			if hint != "" {
+				fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
+			}
 		}
 		return 1
 	}
@@ -127,7 +132,7 @@ func cmdPull(args []string) int {
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: reading response: %v\n", err)
+		emitPullError(jsonMode, fmt.Sprintf("reading response: %v", err))
 		return 1
 	}
 
@@ -135,19 +140,21 @@ func cmdPull(args []string) int {
 		endpoint := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
 		var errResp map[string]string
 		if json.Unmarshal(respBody, &errResp) == nil && errResp["error"] != "" {
-			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned HTTP %d for POST /v1/pull: %s\n", target, endpoint, resp.StatusCode, errResp["error"])
+			emitPullError(jsonMode, fmt.Sprintf("pull failed — target %q (%s) returned HTTP %d for POST /v1/pull: %s", target, endpoint, resp.StatusCode, errResp["error"]))
 		} else {
-			fmt.Fprintf(os.Stderr, "error: pull failed — target %q (%s) returned HTTP %d for POST /v1/pull\n", target, endpoint, resp.StatusCode)
+			emitPullError(jsonMode, fmt.Sprintf("pull failed — target %q (%s) returned HTTP %d for POST /v1/pull", target, endpoint, resp.StatusCode))
 		}
-		if hint := pullStatusHint(resp.StatusCode); hint != "" {
-			fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
+		if !jsonMode {
+			if hint := pullStatusHint(resp.StatusCode); hint != "" {
+				fmt.Fprintf(os.Stderr, "  hint: %s\n", hint)
+			}
 		}
 		return 1
 	}
 
 	var pullResp daemon.PullResponse
 	if err := json.Unmarshal(respBody, &pullResp); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid response from target: %v\n", err)
+		emitPullError(jsonMode, fmt.Sprintf("invalid response from target: %v", err))
 		return 1
 	}
 
@@ -245,6 +252,16 @@ func pullStatusHint(statusCode int) string {
 		return "target node's daemon may be starting up or overloaded"
 	default:
 		return ""
+	}
+}
+
+// emitPullError outputs an error as JSON or plain text based on the mode.
+func emitPullError(jsonMode bool, msg string) {
+	if jsonMode {
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(map[string]string{"error": msg})
+	} else {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 }
 
