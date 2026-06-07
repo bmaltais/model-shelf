@@ -141,6 +141,14 @@ Service actions:
 `, version)
 }
 
+// peerTransferTimeout is the max time pullFromMeshPeer waits for an inline
+// peer transfer. Overridable in tests.
+var peerTransferTimeout = 5 * time.Minute
+
+// peerProgressInterval controls how often pullFromMeshPeer prints progress.
+// Overridable in tests.
+var peerProgressInterval = 5 * time.Second
+
 // booleanFlags lists flags that don't take a value argument.
 var booleanFlags = map[string]bool{
 	"json":        true,
@@ -483,7 +491,8 @@ func pullFromMeshPeer(repoID, format, quant, shelfRoot string) *resolver.Resolve
 	}
 
 	// Poll the job until completion (with timeout).
-	deadline := time.Now().Add(5 * time.Minute)
+	deadline := time.Now().Add(peerTransferTimeout)
+	var lastPrint time.Time
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		jobURL := fmt.Sprintf("http://%s/v1/jobs?id=%s", addr, pullResp.JobID)
@@ -517,7 +526,19 @@ func pullFromMeshPeer(repoID, format, quant, shelfRoot string) *resolver.Resolve
 		case daemon.JobFailed:
 			return nil
 		}
+		if time.Since(lastPrint) >= peerProgressInterval {
+			lastPrint = time.Now()
+			if job.BytesTotal > 0 {
+				pct := float64(job.BytesDownloaded) / float64(job.BytesTotal) * 100
+				fmt.Fprintf(os.Stderr, "resolve: transferring %.0f%% (%s/%s)\n",
+					pct, fmtBytes(job.BytesDownloaded), fmtBytes(job.BytesTotal))
+			} else {
+				fmt.Fprintf(os.Stderr, "resolve: transferring...\n")
+			}
+		}
 	}
+	fmt.Fprintf(os.Stderr, "resolve: transfer timed out after %s — use `model-shelf pull` for large transfers\n",
+		peerTransferTimeout)
 	return nil
 }
 

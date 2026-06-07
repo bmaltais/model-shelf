@@ -7,10 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/resolver"
@@ -417,6 +420,165 @@ func TestCmdResolve_SourceHFSkipsPeers(t *testing.T) {
 	}
 	if peerCalled {
 		t.Error("--source=hf should skip mesh peer query, but /v1/nodes was called")
+	}
+}
+
+// TestPullFromMeshPeer_PrintsProgress verifies that pullFromMeshPeer prints
+// periodic progress lines to stderr while the transfer is in-progress, and
+// no timeout message when the transfer completes in time.
+func TestPullFromMeshPeer_PrintsProgress(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf", "unsloth", "Qwen3-0.6B-GGUF"), 0o755)
+
+	// The model file must exist for the post-transfer local re-resolve to succeed.
+	modelPath := filepath.Join(shelfRoot, "gguf", "unsloth", "Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q4_K_M.gguf")
+	os.WriteFile(modelPath, []byte("fake gguf"), 0o644)
+
+	const jobID = "testjob001"
+	pollCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/pull":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(daemon.PullResponse{
+				JobID:  jobID,
+				Status: daemon.JobQueued,
+				Target: "local-node",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs":
+			pollCount++
+			w.Header().Set("Content-Type", "application/json")
+			if pollCount <= 3 {
+				// First few polls: in-progress with bytes.
+				json.NewEncoder(w).Encode(daemon.Job{
+					ID:              jobID,
+					Status:          daemon.JobDownloading,
+					BytesDownloaded: 300_000_000,
+					BytesTotal:      637_000_000,
+				})
+			} else {
+				json.NewEncoder(w).Encode(daemon.Job{
+					ID:     jobID,
+					Status: daemon.JobCompleted,
+				})
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := fmt.Sprintf("name = \"local-node\"\nport = %d\nroles = [\"executor\"]\nshelf_root = %q\n", port, shelfRoot)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	// Shrink progress interval so we get output within a few polls.
+	orig := peerProgressInterval
+	peerProgressInterval = 1 * time.Millisecond
+	t.Cleanup(func() { peerProgressInterval = orig })
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	result := pullFromMeshPeer("unsloth/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M", shelfRoot)
+
+	w.Close()
+	os.Stderr = oldStderr
+	errOutput, _ := io.ReadAll(r)
+	stderr := string(errOutput)
+
+	if result == nil {
+		t.Fatal("expected non-nil result on completed transfer")
+	}
+	if !strings.Contains(stderr, "transferring") {
+		t.Errorf("expected progress line in stderr, got: %s", stderr)
+	}
+	if strings.Contains(stderr, "timed out") {
+		t.Errorf("expected no timeout message on success, got: %s", stderr)
+	}
+}
+
+// TestPullFromMeshPeer_TimeoutMessage verifies that when the transfer times out,
+// a message suggesting `model-shelf pull` is printed to stderr.
+func TestPullFromMeshPeer_TimeoutMessage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+
+	const jobID = "slowjob"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/pull":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(daemon.PullResponse{
+				JobID:  jobID,
+				Status: daemon.JobQueued,
+				Target: "local-node",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs":
+			// Never completes — always downloading.
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(daemon.Job{
+				ID:              jobID,
+				Status:          daemon.JobDownloading,
+				BytesDownloaded: 100_000_000,
+				BytesTotal:      637_000_000,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	meshCfgContent := fmt.Sprintf("name = \"local-node\"\nport = %d\nroles = [\"executor\"]\nshelf_root = %q\n", port, shelfRoot)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	// Short timeout so the test finishes quickly.
+	origTimeout := peerTransferTimeout
+	origInterval := peerProgressInterval
+	peerTransferTimeout = 200 * time.Millisecond
+	peerProgressInterval = 50 * time.Millisecond
+	t.Cleanup(func() {
+		peerTransferTimeout = origTimeout
+		peerProgressInterval = origInterval
+	})
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	result := pullFromMeshPeer("unsloth/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M", shelfRoot)
+
+	w.Close()
+	os.Stderr = oldStderr
+	errOutput, _ := io.ReadAll(r)
+	stderr := string(errOutput)
+
+	if result != nil {
+		t.Errorf("expected nil result on timeout, got %+v", result)
+	}
+	if !strings.Contains(stderr, "timed out") {
+		t.Errorf("expected timeout message in stderr, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "model-shelf pull") {
+		t.Errorf("expected 'model-shelf pull' suggestion in stderr, got: %s", stderr)
 	}
 }
 
