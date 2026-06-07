@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,6 +72,9 @@ func cmdUpgrade(args []string) int {
 
 	// Standalone mode.
 	err := runSelfUpgradeFunc(targetVersion, version, yes, force, os.Stdout, os.Stderr, os.Stdin)
+	if errors.Is(err, selfupgrade.ErrAlreadyCurrent) {
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -131,23 +135,32 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		return 1
 	}
 
-	// Partition nodes: skip self, classify peers as online or offline.
-	var onlinePeers, offlinePeers []daemon.MeshNode
+	// Partition nodes: skip self, classify peers as needing upgrade, already current, or offline.
+	var needsUpgrade, alreadyCurrent, offlinePeers []daemon.MeshNode
 	for _, n := range nodes {
 		if n.Name == cfg.Name {
 			continue
 		}
-		if n.Status == daemon.StatusOnline {
-			onlinePeers = append(onlinePeers, n)
-		} else {
+		if n.Status != daemon.StatusOnline {
 			offlinePeers = append(offlinePeers, n)
+			continue
+		}
+		if strings.TrimPrefix(n.Version, "v") == target {
+			alreadyCurrent = append(alreadyCurrent, n)
+		} else {
+			needsUpgrade = append(needsUpgrade, n)
 		}
 	}
 
 	// 3. Print confirmation table.
 	nameWidth := 6 // minimum column width; computed from peers only
 	if !jsonOutput {
-		for _, p := range onlinePeers {
+		for _, p := range needsUpgrade {
+			if len(p.Name) > nameWidth {
+				nameWidth = len(p.Name)
+			}
+		}
+		for _, p := range alreadyCurrent {
 			if len(p.Name) > nameWidth {
 				nameWidth = len(p.Name)
 			}
@@ -158,21 +171,24 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 			}
 		}
 
-		for _, p := range onlinePeers {
+		for _, p := range needsUpgrade {
 			fmt.Fprintf(stdout, "  %-*s  %s → %s   will upgrade\n", nameWidth, p.Name, nodeVersion(p.Version), target)
+		}
+		for _, p := range alreadyCurrent {
+			fmt.Fprintf(stdout, "  %-*s  %s            already current — skip\n", nameWidth, p.Name, nodeVersion(p.Version))
 		}
 		for _, p := range offlinePeers {
 			fmt.Fprintf(stdout, "  %-*s  %s            offline — will skip\n", nameWidth, p.Name, nodeVersion(p.Version))
 		}
 		fmt.Fprintln(stdout)
 
-		if len(onlinePeers) > 0 {
-			fmt.Fprintf(stdout, "Upgrade %d node(s) to v%s? [y/N] ", len(onlinePeers), target)
+		if len(needsUpgrade) > 0 {
+			fmt.Fprintf(stdout, "Upgrade %d node(s) to v%s? [y/N] ", len(needsUpgrade), target)
 		}
 	}
 
-	// Prompt unless --yes or no online peers.
-	if !yes && len(onlinePeers) > 0 && !jsonOutput {
+	// Prompt unless --yes or no peers need upgrading.
+	if !yes && len(needsUpgrade) > 0 && !jsonOutput {
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Scan()
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
@@ -182,9 +198,9 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		}
 	}
 
-	// 4. Fan out upgrades to online peers in parallel.
+	// 4. Fan out upgrades to peers that need it in parallel.
 	var resultsMu sync.Mutex
-	results := make([]nodeUpgradeResult, 0, len(offlinePeers)+len(onlinePeers)+1) // +1 for self
+	results := make([]nodeUpgradeResult, 0, len(offlinePeers)+len(alreadyCurrent)+len(needsUpgrade)+1) // +1 for self
 
 	// Pre-populate offline skips.
 	for _, p := range offlinePeers {
@@ -194,8 +210,16 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		}
 	}
 
+	// Pre-populate already-current skips.
+	for _, p := range alreadyCurrent {
+		results = append(results, nodeUpgradeResult{Name: p.Name, Status: "already_current"})
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "  – %-*s  already current\n", nameWidth, p.Name)
+		}
+	}
+
 	var wg sync.WaitGroup
-	for _, peer := range onlinePeers {
+	for _, peer := range needsUpgrade {
 		wg.Add(1)
 		go func(p daemon.MeshNode, w int) {
 			defer wg.Done()
@@ -223,7 +247,13 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 
 	selfErr := runSelfUpgradeFunc(target, version, true, force, stdout, os.Stderr, nil)
 	selfResult.ElapsedSeconds = time.Since(selfStart).Seconds()
-	if selfErr != nil {
+	if errors.Is(selfErr, selfupgrade.ErrAlreadyCurrent) {
+		selfResult.Status = "already_current"
+		if !jsonOutput {
+			fmt.Fprintf(stdout, "  – %-*s  already current\n", nameWidth, cfg.Name)
+		}
+		selfErr = nil
+	} else if selfErr != nil {
 		selfResult.Status = "failed"
 		selfResult.Reason = selfErr.Error()
 		fmt.Fprintf(os.Stderr, "error: self-upgrade failed: %v\n", selfErr)
@@ -232,7 +262,7 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "  ✓ %-*s  upgraded → %s  (%.0fs)\n", nameWidth, cfg.Name, target, selfResult.ElapsedSeconds)
 		}
-		// Restart service after successful self-upgrade.
+		// Restart service after successful self-upgrade (binary was replaced).
 		status, statusErr := service.GetStatus()
 		if statusErr == nil && status.Installed {
 			if restartErr := service.Restart(); restartErr != nil {

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,10 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrAlreadyCurrent is returned by Run when the binary is already at the target
+// version and --force was not set. The caller should exit 0 without restarting.
+var ErrAlreadyCurrent = errors.New("already at target version")
 
 const (
 	githubAPILatest   = "https://api.github.com/repos/bmaltais/model-shelf/releases/latest"
@@ -255,7 +260,7 @@ func Run(targetVersion, currentVersion string, yes, force bool, stdout, stderr i
 	if current == target && !force {
 		fmt.Fprintf(stdout, "Already running model-shelf %s — nothing to do.\n", current)
 		fmt.Fprintf(stdout, "(Use --force to reinstall the same version.)\n")
-		return nil
+		return ErrAlreadyCurrent
 	}
 
 	// 3. Determine platform.

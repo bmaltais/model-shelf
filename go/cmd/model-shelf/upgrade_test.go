@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
 	"github.com/alexziskind1/model-shelf/internal/meshconfig"
+	"github.com/alexziskind1/model-shelf/internal/selfupgrade"
 )
 
 func TestIsControllerNode(t *testing.T) {
@@ -501,6 +503,201 @@ func TestUpgradePeerNode_MeshKeyForwarded(t *testing.T) {
 	}
 	if gotAuth != "Bearer secret-key" {
 		t.Errorf("expected Authorization header 'Bearer secret-key', got %q", gotAuth)
+	}
+}
+
+// TestCmdUpgrade_StandaloneAlreadyCurrent_NoRestart verifies that when the binary
+// is already at the target version (ErrAlreadyCurrent), cmdUpgrade exits 0 and does
+// NOT attempt to restart the service (fix for issue #216).
+func TestCmdUpgrade_StandaloneAlreadyCurrent_NoRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return selfupgrade.ErrAlreadyCurrent
+	}
+
+	// If the code mistakenly calls service.Restart(), it will fail because no service
+	// is installed in the test environment — but we're primarily asserting exit code 0.
+	code := cmdUpgrade([]string{"--version", "1.0.0", "--yes"})
+	if code != 0 {
+		t.Fatalf("expected exit 0 when already current, got %d", code)
+	}
+}
+
+// TestRunMeshUpgrade_AlreadyCurrentPeersSkipped verifies that online peers already at
+// the target version are shown as "already current" in the table and not sent a
+// POST /v1/upgrade request (fix for issue #215).
+func TestRunMeshUpgrade_AlreadyCurrentPeersSkipped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return selfupgrade.ErrAlreadyCurrent
+	}
+
+	upgradeHit := false
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/upgrade" {
+			upgradeHit = true
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		}
+	}))
+	defer peerSrv.Close()
+
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline, Version: "1.0.0"},
+		{Name: "peer1", Address: "127.0.0.1", Port: parsePort(t, peerSrv.URL), Roles: []string{"store"}, Status: daemon.StatusOnline, Version: "1.0.0"},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	oldOut := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := runMeshUpgrade(cfg, "1.0.0", true, false, true)
+
+	w.Close()
+	os.Stdout = oldOut
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if upgradeHit {
+		t.Error("POST /v1/upgrade should not be sent to peer already at target version")
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	var result meshUpgradeOutput
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, buf.String())
+	}
+
+	byName := make(map[string]nodeUpgradeResult)
+	for _, n := range result.Nodes {
+		byName[n.Name] = n
+	}
+	if byName["peer1"].Status != "already_current" {
+		t.Errorf("peer1: expected 'already_current', got %q", byName["peer1"].Status)
+	}
+	if byName["ctrl"].Status != "already_current" {
+		t.Errorf("ctrl: expected 'already_current', got %q", byName["ctrl"].Status)
+	}
+}
+
+// TestRunMeshUpgrade_MixedCurrentAndNeedsUpgrade verifies that only peers NOT at the
+// target version receive a POST /v1/upgrade, while already-current peers are skipped.
+func TestRunMeshUpgrade_MixedCurrentAndNeedsUpgrade(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return nil
+	}
+
+	var upgradeRequestsReceived []string
+	var mu sync.Mutex
+	peerOld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost {
+			mu.Lock()
+			upgradeRequestsReceived = append(upgradeRequestsReceived, "old-peer")
+			mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		}
+		if r.URL.Path == "/v1/health" {
+			json.NewEncoder(w).Encode(map[string]string{"version": "1.0.0"})
+		}
+	}))
+	defer peerOld.Close()
+
+	peerCurrent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/upgrade" {
+			mu.Lock()
+			upgradeRequestsReceived = append(upgradeRequestsReceived, "current-peer")
+			mu.Unlock()
+		}
+	}))
+	defer peerCurrent.Close()
+
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline, Version: "0.9.0"},
+		{Name: "old-peer", Address: "127.0.0.1", Port: parsePort(t, peerOld.URL), Roles: []string{"store"}, Status: daemon.StatusOnline, Version: "0.9.0"},
+		{Name: "current-peer", Address: "127.0.0.1", Port: parsePort(t, peerCurrent.URL), Roles: []string{"store"}, Status: daemon.StatusOnline, Version: "1.0.0"},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	oldOut := os.Stdout
+	rp, wp, _ := os.Pipe()
+	os.Stdout = wp
+
+	code := runMeshUpgrade(cfg, "1.0.0", true, false, true)
+
+	wp.Close()
+	os.Stdout = oldOut
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	for _, name := range upgradeRequestsReceived {
+		if name == "current-peer" {
+			t.Error("POST /v1/upgrade should not be sent to current-peer already at 1.0.0")
+		}
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(rp)
+	var result meshUpgradeOutput
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, buf.String())
+	}
+	byName := make(map[string]nodeUpgradeResult)
+	for _, n := range result.Nodes {
+		byName[n.Name] = n
+	}
+	if byName["current-peer"].Status != "already_current" {
+		t.Errorf("current-peer: expected 'already_current', got %q", byName["current-peer"].Status)
+	}
+	if byName["old-peer"].Status != "upgraded" {
+		t.Errorf("old-peer: expected 'upgraded', got %q", byName["old-peer"].Status)
 	}
 }
 
