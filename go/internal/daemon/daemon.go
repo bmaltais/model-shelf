@@ -133,6 +133,7 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/events", d.handleEvents)
 	mux.HandleFunc("/v1/inventory", d.handleInventory)
 	mux.HandleFunc("/v1/inventory/rescan", d.handleInventoryRescan)
+	mux.HandleFunc("/v1/peer-inventory", d.handlePeerInventory)
 	mux.HandleFunc("/v1/pull", d.handlePull)
 	mux.HandleFunc("/v1/jobs", d.handleJobs)
 	mux.HandleFunc("/v1/models/", d.handleModelDownload)
@@ -358,6 +359,29 @@ func (d *Daemon) handleInventoryRescan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handlePeerInventory returns the cached inventory for a named peer node.
+// Used by the CLI to surface stale entries when a node is offline.
+// GET /v1/peer-inventory?node=<name>
+func (d *Daemon) handlePeerInventory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	nodeName := r.URL.Query().Get("node")
+	if nodeName == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error": "node query parameter required"}`))
+		return
+	}
+	entries := d.gossip.PeerInventory(nodeName)
+	if entries == nil {
+		entries = []InventoryEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
 }
 
 // GetInventory returns the daemon's inventory (used by resolve to touch models).

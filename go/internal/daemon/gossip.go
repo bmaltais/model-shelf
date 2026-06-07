@@ -70,25 +70,27 @@ type Event struct {
 
 // Gossip manages mesh state replication.
 type Gossip struct {
-	mu         sync.RWMutex
-	nodes      []MeshNode
-	self       string // this node's name
-	shelfRoot  string // for self disk usage updates
-	meshKey    string
-	startTime  time.Time              // daemon start time for uptime calculation
-	jobs       *JobStore              // shared job store for gossip replication
-	gpuConfig  *meshconfig.GPUConfig  // GPU override config for self-refresh
-	cancel     context.CancelFunc
+	mu                  sync.RWMutex
+	nodes               []MeshNode
+	self                string // this node's name
+	shelfRoot           string // for self disk usage updates
+	meshKey             string
+	startTime           time.Time              // daemon start time for uptime calculation
+	jobs                *JobStore              // shared job store for gossip replication
+	gpuConfig           *meshconfig.GPUConfig  // GPU override config for self-refresh
+	cancel              context.CancelFunc
+	peerInventoryCache  map[string][]InventoryEntry // last-known inventory per node name
 }
 
 // NewGossip creates a gossip instance, loading persisted state if available.
 func NewGossip(selfNode MeshNode, meshKey string, shelfRoot string, startTime time.Time, jobs *JobStore) *Gossip {
 	g := &Gossip{
-		self:      selfNode.Name,
-		shelfRoot: shelfRoot,
-		meshKey:   meshKey,
-		startTime: startTime,
-		jobs:      jobs,
+		self:               selfNode.Name,
+		shelfRoot:          shelfRoot,
+		meshKey:            meshKey,
+		startTime:          startTime,
+		jobs:               jobs,
+		peerInventoryCache: make(map[string][]InventoryEntry),
 	}
 
 	// Try to load persisted state.
@@ -369,6 +371,8 @@ func (g *Gossip) pollPeers() {
 		if hr.OK {
 			// Fetch remote jobs and merge into local store.
 			g.fetchPeerJobs(nodes[i])
+			// Cache remote inventory for stale fallback.
+			g.fetchPeerInventory(nodes[i])
 
 			now := time.Now()
 			nodes[i].LastSeen = &now
@@ -556,6 +560,43 @@ func (g *Gossip) fetchPeerJobs(node MeshNode) {
 		return
 	}
 	g.jobs.Merge(jobs)
+}
+
+// fetchPeerInventory fetches the inventory from a peer node and caches it.
+// Called on every successful health poll so offline nodes can serve stale data.
+func (g *Gossip) fetchPeerInventory(node MeshNode) {
+	url := fmt.Sprintf("http://%s:%d/v1/inventory", node.Address, node.Port)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	if g.meshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+g.meshKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var entries []InventoryEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return
+	}
+	g.mu.Lock()
+	g.peerInventoryCache[node.Name] = entries
+	g.mu.Unlock()
+}
+
+// PeerInventory returns the last cached inventory for the named peer node.
+// Returns nil if no cache entry exists for the node.
+func (g *Gossip) PeerInventory(nodeName string) []InventoryEntry {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.peerInventoryCache[nodeName]
 }
 
 func (g *Gossip) pushEvent(ev Event, nodes []MeshNode) {

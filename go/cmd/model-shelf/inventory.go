@@ -106,14 +106,17 @@ func fetchNodes(cfg *meshconfig.Config) ([]daemon.MeshNode, error) {
 }
 
 // aggregateInventory queries each node's /v1/inventory and builds a combined list.
-// Emits a warning to stderr for each unreachable node (fixes #116).
+// For unreachable nodes, falls back to the local daemon's peer inventory cache and
+// marks those rows as stale. Emits a warning to stderr for each unreachable node.
 func aggregateInventory(nodes []daemon.MeshNode, cfg *meshconfig.Config) []InventoryRow {
 	rows := []InventoryRow{}
 
 	for _, node := range nodes {
 		entries, stale := fetchNodeInventory(node, cfg)
 		if stale {
-			fmt.Fprintf(os.Stderr, "warning: %s unreachable — models not listed\n", node.Name)
+			fmt.Fprintf(os.Stderr, "warning: %s unreachable — showing cached inventory\n", node.Name)
+			// Fall back to the local daemon's cached inventory for this node.
+			entries = fetchCachedInventory(node.Name, cfg)
 		}
 		for _, e := range entries {
 			rows = append(rows, InventoryRow{
@@ -160,6 +163,33 @@ func fetchNodeInventory(node daemon.MeshNode, cfg *meshconfig.Config) ([]daemon.
 		return nil, true
 	}
 	return entries, false
+}
+
+// fetchCachedInventory queries the local daemon for a peer node's cached inventory.
+// Returns an empty slice if no cache exists or the daemon is unreachable.
+func fetchCachedInventory(nodeName string, cfg *meshconfig.Config) []daemon.InventoryEntry {
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/peer-inventory?node=%s", cfg.Port, nodeName)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	if cfg.MeshKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.MeshKey)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var entries []daemon.InventoryEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil
+	}
+	return entries
 }
 
 func formatOrder(format string) int {

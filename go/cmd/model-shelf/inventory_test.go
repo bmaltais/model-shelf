@@ -204,20 +204,25 @@ func TestCmdInventory_OfflineNode(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	now := time.Now()
-	// Node2 is offline — should show as stale with no entries.
+	// Node2 is offline — its cached inventory should appear with stale:true.
 	nodes := []daemon.MeshNode{
 		{Name: "online-node", Address: "REPLACE", Port: 0, Roles: []string{"store"}, Status: daemon.StatusOnline, LastSeen: &now},
 		{Name: "offline-node", Address: "10.99.99.99", Port: 9999, Roles: []string{"store"}, Status: daemon.StatusOffline},
 	}
 
-	inv := []daemon.InventoryEntry{
+	onlineInv := []daemon.InventoryEntry{
 		{RepoID: "org/model-x", Format: "gguf", Quant: "Q8_0", SizeBytes: 8_000_000_000, LastAccessed: now},
+	}
+
+	// Cached inventory that the local daemon returns for the offline node.
+	cachedInv := []daemon.InventoryEntry{
+		{RepoID: "MaziyarPanahi/Qwen3-0.6B-GGUF", Format: "gguf", Quant: "Q4_K_M", SizeBytes: 402_000_000, LastAccessed: now},
 	}
 
 	nodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/inventory" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(inv)
+			json.NewEncoder(w).Encode(onlineInv)
 		}
 	}))
 	defer nodeServer.Close()
@@ -226,10 +231,20 @@ func TestCmdInventory_OfflineNode(t *testing.T) {
 	nodes[0].Address = nodeAddr
 	nodes[0].Port = nodePort
 
+	// Local daemon serves both /v1/nodes and /v1/peer-inventory (for stale cache).
 	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/nodes" {
-			w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/nodes":
 			json.NewEncoder(w).Encode(nodes)
+		case "/v1/peer-inventory":
+			if r.URL.Query().Get("node") == "offline-node" {
+				json.NewEncoder(w).Encode(cachedInv)
+			} else {
+				json.NewEncoder(w).Encode([]daemon.InventoryEntry{})
+			}
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	defer daemonServer.Close()
@@ -277,20 +292,138 @@ func TestCmdInventory_OfflineNode(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &got); err != nil {
 		t.Fatalf("invalid JSON output: %v\noutput: %s", err, output)
 	}
-	// Only the online node's models should appear.
-	if len(got) != 1 {
-		t.Fatalf("expected 1 row (from online node), got %d: %s", len(got), output)
+
+	// Both online entry AND cached offline entry should appear.
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rows (1 online + 1 stale), got %d: %s", len(got), output)
 	}
-	if got[0].Node != "online-node" {
-		t.Errorf("expected node 'online-node', got %q", got[0].Node)
+
+	// Rows are sorted by node name: "offline-node" < "online-node".
+	staleRow := got[0]
+	onlineRow := got[1]
+
+	// Online row: stale=false.
+	if onlineRow.Node != "online-node" {
+		t.Errorf("expected row 1 node='online-node', got %q", onlineRow.Node)
 	}
-	if got[0].Stale {
+	if onlineRow.Stale {
 		t.Errorf("expected stale=false for online node")
 	}
 
-	// Verify warning was emitted on stderr.
+	// Offline (stale) row.
+	if staleRow.Node != "offline-node" {
+		t.Errorf("expected row 0 node='offline-node', got %q", staleRow.Node)
+	}
+	if !staleRow.Stale {
+		t.Errorf("expected stale=true for offline node, got false")
+	}
+	if staleRow.RepoID != "MaziyarPanahi/Qwen3-0.6B-GGUF" {
+		t.Errorf("expected cached repo_id, got %q", staleRow.RepoID)
+	}
+
+	// Verify warning was emitted on stderr (not stdout).
 	if !strings.Contains(stderrOutput, "warning: offline-node unreachable") {
 		t.Errorf("expected warning about offline-node on stderr, got: %q", stderrOutput)
+	}
+}
+
+// TestCmdInventory_OfflineNode_NoCache verifies that when an offline node has no
+// cached inventory (cache empty), the output contains only online entries and the
+// warning still goes to stderr (#211, #212).
+func TestCmdInventory_OfflineNode_NoCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	nodes := []daemon.MeshNode{
+		{Name: "online-node", Address: "REPLACE", Port: 0, Roles: []string{"store"}, Status: daemon.StatusOnline, LastSeen: &now},
+		{Name: "offline-node", Address: "10.99.99.99", Port: 9999, Roles: []string{"store"}, Status: daemon.StatusOffline},
+	}
+
+	onlineInv := []daemon.InventoryEntry{
+		{RepoID: "org/model-z", Format: "gguf", Quant: "Q4_K_M", SizeBytes: 4_000_000_000, LastAccessed: now},
+	}
+
+	nodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/inventory" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(onlineInv)
+		}
+	}))
+	defer nodeServer.Close()
+
+	nodeAddr, nodePort := parseTestServerAddr(t, nodeServer.URL)
+	nodes[0].Address = nodeAddr
+	nodes[0].Port = nodePort
+
+	// Local daemon returns empty cache for the offline node.
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/nodes":
+			json.NewEncoder(w).Encode(nodes)
+		case "/v1/peer-inventory":
+			json.NewEncoder(w).Encode([]daemon.InventoryEntry{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	daemonPort := strings.TrimPrefix(daemonServer.URL, "http://127.0.0.1:")
+	cfg := &meshconfig.Config{
+		Name:      "online-node",
+		Port:      mustAtoi(t, daemonPort),
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	oldOut := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	oldErr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	code := cmdInventory([]string{"--json"})
+
+	wOut.Close()
+	os.Stdout = oldOut
+	wErr.Close()
+	os.Stderr = oldErr
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var bufOut bytes.Buffer
+	bufOut.ReadFrom(rOut)
+	output := bufOut.String()
+
+	var bufErr bytes.Buffer
+	bufErr.ReadFrom(rErr)
+	stderrOutput := bufErr.String()
+
+	var got []InventoryRow
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, output)
+	}
+
+	// Only the online node's model appears when cache is empty.
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row (online only, no cache), got %d: %s", len(got), output)
+	}
+	if got[0].Node != "online-node" {
+		t.Errorf("expected 'online-node', got %q", got[0].Node)
+	}
+
+	// Warning must go to stderr, not stdout (stdout must be valid JSON).
+	if !strings.Contains(stderrOutput, "warning: offline-node unreachable") {
+		t.Errorf("expected warning on stderr, got: %q", stderrOutput)
 	}
 }
 

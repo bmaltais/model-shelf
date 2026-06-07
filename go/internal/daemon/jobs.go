@@ -45,7 +45,7 @@ type Job struct {
 	Status          JobStatus  `json:"status"`
 	BytesDownloaded int64      `json:"bytes_downloaded"`
 	BytesTotal      int64      `json:"bytes_total"`
-	Error           string     `json:"error,omitempty"`
+	Error           string     `json:"error"`
 	CreatedAt       time.Time  `json:"created_at"`
 	DoneAt          *time.Time `json:"done_at,omitempty"`
 	LastProgress    time.Time  `json:"last_progress,omitempty"`
