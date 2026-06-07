@@ -88,7 +88,9 @@ Or build from source (requires Go 1.22+):
 cd go && go build -o model-shelf ./cmd/model-shelf
 ```
 
-### Python (pip / uv)
+### Python (pip / uv) — legacy, deprecated
+
+> **Deprecated:** The Python package is the legacy implementation that predates the Go rewrite. It does not include mesh networking, peer transfers, or any features added after v0.14.0. Use the Go binary (curl install or build from `go/`) for all current functionality.
 
 ```bash
 uv tool install git+https://github.com/bmaltais/model-shelf
@@ -416,7 +418,7 @@ model-shelf init --role store --shelf ~/.cache/model-shelf/models
 
 ## Status
 
-v0.15 — GGUF, MLX, and safetensors via CLI + Python lib + **Go binary**. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), disk/uptime/GPU metrics propagation, and **peer-to-peer model transfers**. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics (including GPU) for scripting.
+v0.5.9 (Go binary) — GGUF, MLX, and safetensors via CLI. **Mesh networking** with gossip-based node discovery, 15-second health polling, automatic offline detection (~45s), disk/uptime/GPU metrics propagation, and **peer-to-peer model transfers**. Publisher/repo nested layout mirrors the Hugging Face Hub. `model-shelf init --role --shelf` configures mesh nodes; `model-shelf join` connects them. `model-shelf nodes --json` exposes full health metrics (including GPU) for scripting. Smart source selection (`--source peer|hf|any`) and exit code 2 for `missing_locally`.
 
 ### Go version
 

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "model-shelf"
-version = "0.14.0"
-description = "Local-first model resolver: check your own storage before downloading from Hugging Face."
+version = "0.5.9"
+description = "Legacy Python CLI (deprecated — use the Go binary instead: https://github.com/bmaltais/model-shelf)."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
