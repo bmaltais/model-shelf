@@ -138,6 +138,7 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 
 		remaining := info.Size() - startByte
 		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(shelfPath)))
 		if startByte > 0 {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", startByte, info.Size()-1, info.Size()))
@@ -451,9 +452,11 @@ func (d *Daemon) transferGGUF(ctx context.Context, jobID string, body io.Reader,
 		// Resuming: open existing partial in append mode.
 		f, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			// Partial disappeared or is unwritable — restart fresh.
-			startOffset = 0
-			f, err = os.Create(partial)
+			// Partial disappeared (TOCTOU after we sent "Range: bytes=N-") or is
+			// unwritable. The response body contains only the tail bytes. Do not
+			// Create + write the short body (would yield truncated/corrupt final
+			// model after rename). Return err so caller falls back to full HF.
+			return fmt.Errorf("failed to open %s for resume at offset %d: %w", partial, startOffset, err)
 		}
 	} else {
 		f, err = os.Create(partial)

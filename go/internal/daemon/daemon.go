@@ -192,13 +192,16 @@ func (d *Daemon) Run() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		d.server.Shutdown(shutdownCtx)
-		// Wait for in-flight transfers to finish cleanup before exiting.
-		d.transfers.Wait()
 	}()
 
 	log.Printf("model-shelf daemon: listening on %s (node: %s, roles: %v)", addr, d.cfg.Name, d.cfg.Roles)
 	err = d.server.Serve(ln)
 	if err == http.ErrServerClosed {
+		// Wait for in-flight transfers to finish cleanup before exiting.
+		// Must block in the main goroutine *after* Serve unblocks so the
+		// process does not terminate while transfer goroutines are still
+		// doing atomic renames of .partial or removing on non-cancel errors.
+		d.transfers.Wait()
 		return nil
 	}
 	return err
