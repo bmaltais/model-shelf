@@ -37,32 +37,30 @@ func cmdRole(args []string) int {
 	action := positional[0]
 
 	if flags["help"] == "true" {
-		fmt.Printf("Usage: model-shelf role %s <roles>\n", action)
+		fmt.Printf("Usage: model-shelf role %s <roles> [--json]\n", action)
 		fmt.Println()
 		fmt.Println("Roles are comma-separated: controller,store,executor")
 		return 0
 	}
 
 	if action != "set" && action != "add" && action != "remove" {
-		fmt.Fprintf(os.Stderr, "unknown role action: %s\n", action)
-		fmt.Fprintf(os.Stderr, "usage: model-shelf role <set|add|remove> <roles>\n")
+		emitError(jsonOutput, fmt.Sprintf("unknown role action: %s", action))
 		return 1
 	}
 
 	if len(positional) < 2 {
-		fmt.Fprintf(os.Stderr, "error: roles argument is required\n")
-		fmt.Fprintf(os.Stderr, "usage: model-shelf role %s <roles>\n", action)
+		emitError(jsonOutput, fmt.Sprintf("roles argument is required\nusage: model-shelf role %s <roles>", action))
 		return 1
 	}
 
 	if !meshconfig.Exists() {
-		fmt.Fprintf(os.Stderr, "error: not part of a mesh — run `model-shelf init` and `model-shelf join`\n")
+		emitError(jsonOutput, "not part of a mesh — run `model-shelf init` and `model-shelf join`")
 		return 1
 	}
 
 	cfg, err := meshconfig.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
@@ -75,13 +73,13 @@ func cmdRole(args []string) int {
 			continue
 		}
 		if !validRoles[r] {
-			fmt.Fprintf(os.Stderr, "error: unknown role %q (valid: controller, store, executor)\n", r)
+			emitError(jsonOutput, fmt.Sprintf("unknown role %q (valid: controller, store, executor)", r))
 			return 1
 		}
 		inputRoles = append(inputRoles, r)
 	}
 	if len(inputRoles) == 0 {
-		fmt.Fprintf(os.Stderr, "error: at least one valid role is required\n")
+		emitError(jsonOutput, "at least one valid role is required")
 		return 1
 	}
 
@@ -112,7 +110,7 @@ func cmdRole(args []string) int {
 			}
 		}
 		if len(remaining) == 0 {
-			fmt.Fprintf(os.Stderr, "error: cannot remove all roles — node must have at least one role\n")
+			emitError(jsonOutput, "cannot remove all roles — node must have at least one role")
 			return 1
 		}
 		cfg.Roles = remaining
@@ -120,7 +118,7 @@ func cmdRole(args []string) int {
 
 	// Write updated config.
 	if err := meshconfig.Write(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "error: could not update config: %v\n", err)
+		emitError(jsonOutput, fmt.Sprintf("could not update config: %v", err))
 		return 1
 	}
 
@@ -129,7 +127,7 @@ func cmdRole(args []string) int {
 			Roles []string `json:"roles"`
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(roleOutput{Roles: cfg.Roles}); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			emitError(jsonOutput, err.Error())
 			return 1
 		}
 	} else {

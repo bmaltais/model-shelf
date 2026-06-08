@@ -981,6 +981,8 @@ func cmdList(args []string) int {
 	for _, root := range candidates {
 		entries, errs := collectShelfEntries(root)
 		for _, e := range errs {
+			// Warnings always go to stderr — intentional even in --json mode,
+			// matching the inventory --json warning contract.
 			fmt.Fprintf(os.Stderr, "warning: %v\n", e)
 		}
 		allEntries = append(allEntries, entries...)
@@ -993,7 +995,7 @@ func cmdList(args []string) int {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(allEntries); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			emitError(jsonOutput, err.Error())
 			return 1
 		}
 		return 0
