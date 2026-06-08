@@ -260,6 +260,58 @@ func (s *JobStore) StalledJobs(timeout time.Duration) []Job {
 	return out
 }
 
+// StalledMergedJobs returns non-local (gossip-replicated) in-progress jobs whose
+// last progress update is older than the given timeout. Used by the watchdog to
+// detect zombie merged jobs when the target daemon restarted mid-transfer.
+func (s *JobStore) StalledMergedJobs(timeout time.Duration) []Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-timeout)
+	var out []Job
+	for _, j := range s.jobs {
+		if j.Local {
+			continue
+		}
+		if j.Status != JobDownloading && j.Status != JobTransferring {
+			continue
+		}
+		if j.LastProgress.Before(cutoff) {
+			out = append(out, *j)
+		}
+	}
+	return out
+}
+
+// ExpireStaleJobsForPeer marks non-local active jobs targeting peerName as
+// failed if they are absent from the freshJobs list returned by the peer.
+// Called after each successful gossip fetch so interrupted jobs are cleaned up
+// when the target daemon restarts (and forgets its in-flight job state).
+func (s *JobStore) ExpireStaleJobsForPeer(peerName string, freshJobs []Job) {
+	freshIDs := make(map[string]bool, len(freshJobs))
+	for _, j := range freshJobs {
+		freshIDs[j.ID] = true
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, j := range s.jobs {
+		if j.Local {
+			continue
+		}
+		if j.Target != peerName {
+			continue
+		}
+		if !isActiveStatus(j.Status) {
+			continue
+		}
+		if !freshIDs[id] {
+			j.Status = JobFailed
+			j.Error = "job interrupted: target daemon restarted"
+			j.DoneAt = &now
+		}
+	}
+}
+
 // Merge adds remote jobs to the store (for gossip replication).
 // Only adds jobs that don't already exist locally.
 func (s *JobStore) Merge(jobs []Job) {

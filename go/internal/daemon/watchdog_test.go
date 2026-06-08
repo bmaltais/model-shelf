@@ -1,8 +1,12 @@
 package daemon
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 )
 
 func TestJobStore_LocalAll_ExcludesReplicated(t *testing.T) {
@@ -118,6 +122,100 @@ func TestJobStore_SetProgress_UpdatesLastProgress(t *testing.T) {
 	j := s.Get(job.ID)
 	if time.Since(j.LastProgress) > time.Second {
 		t.Errorf("SetProgress should update LastProgress to now, got %v ago", time.Since(j.LastProgress))
+	}
+}
+
+func TestReapStalledMergedJobs_TargetOnline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Start a mock health server so the gossip peer appears online.
+	mockPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"name":"peer-1","roles":["store"]}`))
+	}))
+	defer mockPeer.Close()
+	peerHost, peerPort := parseHostPort(t, mockPeer)
+
+	cfg := &meshconfig.Config{
+		Name:      "controller",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: t.TempDir(),
+	}
+	d := New(cfg)
+
+	// Register the mock peer as online in gossip.
+	d.gossip.ApplyEvent(Event{
+		Type: EventJoin,
+		Node: MeshNode{Name: "peer-1", Address: peerHost, Port: peerPort, Roles: []string{"store"}, Status: StatusOnline},
+	})
+
+	// Add a non-local stalled merged job targeting the online peer.
+	stalledJob := Job{
+		ID:           "merged-stalled-watchdog-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model",
+		Format:       "gguf",
+		Target:       "peer-1",
+		Status:       JobTransferring,
+		CreatedAt:    time.Now().Add(-10 * time.Minute),
+		LastProgress: time.Now().Add(-10 * time.Minute),
+		Local:        false,
+	}
+	d.jobs.mu.Lock()
+	d.jobs.jobs[stalledJob.ID] = &stalledJob
+	d.jobs.mu.Unlock()
+
+	// Run the merged-job watchdog with a short timeout so our backdated job triggers.
+	stalled := d.jobs.StalledMergedJobs(5 * time.Minute)
+	if len(stalled) != 1 {
+		t.Fatalf("expected 1 stalled merged job before reap, got %d", len(stalled))
+	}
+
+	d.reapStalledMergedJobs()
+
+	j := d.jobs.Get(stalledJob.ID)
+	if j.Status != JobFailed {
+		t.Errorf("expected stalled merged job to be failed when target is online, got %s", j.Status)
+	}
+	if j.Error == "" {
+		t.Error("expected non-empty error on failed merged job")
+	}
+}
+
+func TestReapStalledMergedJobs_TargetOffline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{
+		Name:      "controller",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: t.TempDir(),
+	}
+	d := New(cfg)
+
+	// Add a non-local stalled job whose target is NOT in gossip (offline / unknown).
+	stalledJob := Job{
+		ID:           "merged-stalled-offline-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model",
+		Format:       "gguf",
+		Target:       "offline-peer",
+		Status:       JobTransferring,
+		CreatedAt:    time.Now().Add(-10 * time.Minute),
+		LastProgress: time.Now().Add(-10 * time.Minute),
+		Local:        false,
+	}
+	d.jobs.mu.Lock()
+	d.jobs.jobs[stalledJob.ID] = &stalledJob
+	d.jobs.mu.Unlock()
+
+	d.reapStalledMergedJobs()
+
+	// Target is offline/unknown — job must NOT be expired by the watchdog.
+	j := d.jobs.Get(stalledJob.ID)
+	if j.Status != JobTransferring {
+		t.Errorf("expected stalled merged job to remain transferring when target is offline, got %s", j.Status)
 	}
 }
 

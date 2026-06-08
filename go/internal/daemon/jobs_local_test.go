@@ -204,3 +204,169 @@ func TestWatchdog_CleansUpStagingDir(t *testing.T) {
 		t.Error("staging directory should have been removed")
 	}
 }
+
+func TestExpireStaleJobsForPeer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	s := NewJobStore()
+
+	// Non-local active job for peer-1 that will NOT be in the fresh list.
+	staleJob := Job{
+		ID:           "stale-job-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model",
+		Format:       "gguf",
+		Target:       "peer-1",
+		Status:       JobTransferring,
+		CreatedAt:    time.Now(),
+		LastProgress: time.Now(),
+		Local:        false,
+	}
+	s.mu.Lock()
+	s.jobs[staleJob.ID] = &staleJob
+	s.mu.Unlock()
+
+	// Non-local active job for peer-1 that IS in the fresh list (must survive).
+	freshJob := Job{
+		ID:           "fresh-job-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model2",
+		Format:       "mlx",
+		Target:       "peer-1",
+		Status:       JobDownloading,
+		CreatedAt:    time.Now(),
+		LastProgress: time.Now(),
+		Local:        false,
+	}
+	s.mu.Lock()
+	s.jobs[freshJob.ID] = &freshJob
+	s.mu.Unlock()
+
+	// Completed job for peer-1 (not active — must not be touched).
+	completedJob := Job{
+		ID:        "completed-job-001",
+		Type:      JobTypeTransfer,
+		RepoID:    "org/model3",
+		Format:    "gguf",
+		Target:    "peer-1",
+		Status:    JobCompleted,
+		CreatedAt: time.Now(),
+		Local:     false,
+	}
+	s.mu.Lock()
+	s.jobs[completedJob.ID] = &completedJob
+	s.mu.Unlock()
+
+	// Non-local active job targeting a different peer (must not be touched).
+	otherPeerJob := Job{
+		ID:           "other-peer-job-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model4",
+		Format:       "gguf",
+		Target:       "peer-2",
+		Status:       JobTransferring,
+		CreatedAt:    time.Now(),
+		LastProgress: time.Now(),
+		Local:        false,
+	}
+	s.mu.Lock()
+	s.jobs[otherPeerJob.ID] = &otherPeerJob
+	s.mu.Unlock()
+
+	// Local active job targeting peer-1 (must not be touched).
+	localJob := s.Create("org/local-model", "gguf", "Q4_K_M", "peer-1")
+	s.SetTransferring(localJob.ID, "peer-1")
+
+	// Expire with fresh list containing only freshJob.
+	s.ExpireStaleJobsForPeer("peer-1", []Job{freshJob})
+
+	// staleJob should be failed.
+	j := s.Get(staleJob.ID)
+	if j.Status != JobFailed {
+		t.Errorf("stale merged job: expected failed, got %s", j.Status)
+	}
+	if j.Error == "" {
+		t.Error("stale merged job: expected non-empty error message")
+	}
+	if j.DoneAt == nil {
+		t.Error("stale merged job: expected DoneAt to be set")
+	}
+
+	// freshJob should remain active.
+	j = s.Get(freshJob.ID)
+	if j.Status != JobDownloading {
+		t.Errorf("fresh merged job: expected downloading, got %s", j.Status)
+	}
+
+	// completedJob should be unchanged.
+	j = s.Get(completedJob.ID)
+	if j.Status != JobCompleted {
+		t.Errorf("completed job: expected completed, got %s", j.Status)
+	}
+
+	// otherPeerJob should be unchanged.
+	j = s.Get(otherPeerJob.ID)
+	if j.Status != JobTransferring {
+		t.Errorf("other peer job: expected transferring, got %s", j.Status)
+	}
+
+	// localJob should be unchanged.
+	j = s.Get(localJob.ID)
+	if j.Status != JobTransferring {
+		t.Errorf("local job: expected transferring, got %s", j.Status)
+	}
+}
+
+func TestStalledMergedJobs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	s := NewJobStore()
+	pastCutoff := time.Now().Add(-10 * time.Minute)
+
+	// Non-local stalled job.
+	stalledMerged := Job{
+		ID:           "merged-stalled-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model",
+		Format:       "gguf",
+		Target:       "peer-1",
+		Status:       JobTransferring,
+		CreatedAt:    pastCutoff,
+		LastProgress: pastCutoff,
+		Local:        false,
+	}
+	s.mu.Lock()
+	s.jobs[stalledMerged.ID] = &stalledMerged
+	s.mu.Unlock()
+
+	// Local stalled job — must NOT appear in StalledMergedJobs.
+	localJob := s.Create("org/local", "gguf", "Q4_K_M", "self")
+	s.SetTransferring(localJob.ID, "source")
+	s.mu.Lock()
+	s.jobs[localJob.ID].LastProgress = pastCutoff
+	s.mu.Unlock()
+
+	// Non-local completed job — must NOT appear.
+	completedMerged := Job{
+		ID:           "merged-completed-001",
+		Type:         JobTypeTransfer,
+		RepoID:       "org/model2",
+		Format:       "gguf",
+		Target:       "peer-1",
+		Status:       JobCompleted,
+		CreatedAt:    pastCutoff,
+		LastProgress: pastCutoff,
+		Local:        false,
+	}
+	s.mu.Lock()
+	s.jobs[completedMerged.ID] = &completedMerged
+	s.mu.Unlock()
+
+	stalled := s.StalledMergedJobs(5 * time.Minute)
+	if len(stalled) != 1 {
+		t.Fatalf("expected 1 stalled merged job, got %d", len(stalled))
+	}
+	if stalled[0].ID != stalledMerged.ID {
+		t.Errorf("expected job %s, got %s", stalledMerged.ID, stalled[0].ID)
+	}
+}
