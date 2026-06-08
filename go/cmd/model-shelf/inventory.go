@@ -28,6 +28,29 @@ type InventoryRow struct {
 	Stale     bool   `json:"stale,omitempty"`
 }
 
+// MarshalJSON ensures "quant" is always emitted (null when empty).
+func (r InventoryRow) MarshalJSON() ([]byte, error) {
+	type Alias InventoryRow
+	if r.Quant == "" {
+		return json.Marshal(struct {
+			Node      string  `json:"node"`
+			RepoID    string  `json:"repo_id"`
+			Quant     *string `json:"quant"`
+			Format    string  `json:"format"`
+			SizeBytes int64   `json:"size_bytes"`
+			Stale     bool    `json:"stale,omitempty"`
+		}{
+			Node:      r.Node,
+			RepoID:    r.RepoID,
+			Quant:     nil,
+			Format:    r.Format,
+			SizeBytes: r.SizeBytes,
+			Stale:     r.Stale,
+		})
+	}
+	return json.Marshal(Alias(r))
+}
+
 func cmdInventory(args []string) int {
 	_, flags := parseFlags(args)
 	if flags["help"] == "true" {
@@ -240,6 +263,7 @@ func printInventoryTable(rows []InventoryRow) {
 		gapWidth       = 2
 		modelColumnIdx = 1  // index of "MODEL" in headers
 		minModelWidth  = 50 // fits most repo:quant strings (typical 20-45 chars)
+		minFormatWidth = 11 // fits "safetensors" (longest valid format value)
 	)
 
 	// Column headers.
@@ -288,6 +312,9 @@ func printInventoryTable(rows []InventoryRow) {
 	}
 	if widths[modelColumnIdx] < minModelWidth {
 		widths[modelColumnIdx] = minModelWidth
+	}
+	if widths[2] < minFormatWidth {
+		widths[2] = minFormatWidth
 	}
 
 	totalGaps := (len(headers) - 1) * gapWidth

@@ -88,7 +88,7 @@ Usage:
   model-shelf inventory [--json]        List models across all mesh nodes
   model-shelf pull <repo> [--target <node>] Pull a model to a target node
   model-shelf status [<job_id>] [flags]  Show job status
-  model-shelf role <set|add|remove>    Manage node roles
+  model-shelf role <get|set|add|remove>  Manage node roles (get is read-only)
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
   model-shelf upgrade [flags]          Upgrade to the latest (or pinned) release
@@ -947,6 +947,29 @@ type ShelfEntry struct {
 	SizeBytes int64  `json:"size_bytes"`
 	Path      string `json:"path"`
 	ShelfRoot string `json:"shelf_root"`
+}
+
+// MarshalJSON ensures "quant" is always emitted (null when empty).
+func (e ShelfEntry) MarshalJSON() ([]byte, error) {
+	type Alias ShelfEntry
+	if e.Quant == "" {
+		return json.Marshal(struct {
+			RepoID    string `json:"repo_id"`
+			Format    string `json:"format"`
+			Quant     *string `json:"quant"`
+			SizeBytes int64  `json:"size_bytes"`
+			Path      string `json:"path"`
+			ShelfRoot string `json:"shelf_root"`
+		}{
+			RepoID:    e.RepoID,
+			Format:    e.Format,
+			Quant:     nil,
+			SizeBytes: e.SizeBytes,
+			Path:      e.Path,
+			ShelfRoot: e.ShelfRoot,
+		})
+	}
+	return json.Marshal(Alias(e))
 }
 
 func cmdList(args []string) int {

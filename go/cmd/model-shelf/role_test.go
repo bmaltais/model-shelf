@@ -352,13 +352,127 @@ func TestRoleRemoveJSON(t *testing.T) {
 
 func TestCmdRole_SubcommandHelp(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, action := range []string{"set", "add", "remove"} {
+	for _, action := range []string{"set", "add", "remove", "get"} {
 		for _, flag := range []string{"--help", "-h"} {
 			code := cmdRole([]string{action, flag})
 			if code != 0 {
 				t.Errorf("role %s %s: expected exit 0, got %d", action, flag, code)
 			}
 		}
+	}
+}
+
+func TestCmdRole_Get(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"controller", "store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdRole([]string{"get"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "roles [controller, store]") {
+		t.Errorf("expected roles [controller, store], got %q", string(out))
+	}
+}
+
+func TestCmdRole_GetJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"controller", "store", "executor"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdRole([]string{"get", "--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	var got struct {
+		Roles []string `json:"roles"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, buf.String())
+	}
+	if len(got.Roles) != 3 {
+		t.Fatalf("expected 3 roles, got %d", len(got.Roles))
+	}
+	roleSet := map[string]bool{}
+	for _, r := range got.Roles {
+		roleSet[r] = true
+	}
+	if !roleSet["controller"] || !roleSet["store"] || !roleSet["executor"] {
+		t.Errorf("expected controller, store, executor, got %v", got.Roles)
+	}
+}
+
+func TestCmdRole_GetDoesNotModify(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	code := cmdRole([]string{"get"})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	// Verify config was not modified.
+	updatedCfg, err := meshconfig.LoadFrom(meshconfig.ConfigPath())
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if len(updatedCfg.Roles) != 1 || updatedCfg.Roles[0] != "controller" {
+		t.Errorf("config should be unchanged, got %v", updatedCfg.Roles)
+	}
+}
+
+func TestCmdRole_GetRequiresNoRolesArg(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	code := cmdRole([]string{"get", "bogus"})
+	if code != 1 {
+		t.Fatalf("expected exit 1 (get takes no roles arg), got %d", code)
 	}
 }
 

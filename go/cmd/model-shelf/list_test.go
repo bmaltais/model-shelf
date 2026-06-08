@@ -545,3 +545,95 @@ func TestListJSONBadConfig(t *testing.T) {
 		t.Errorf("expected non-empty 'error' field, got: %v", errResp)
 	}
 }
+
+// TestCmdList_JSON_QuantNull verifies that non-GGUF models emit "quant": null
+// (not omitted) so JSON consumers don't need to check for field absence.
+func TestCmdList_JSON_QuantNull(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	// GGUF model (should have quant set).
+	ggufDir := filepath.Join(shelfRoot, "gguf", "unsloth", "Qwen3-0.6B-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-0.6B-Q4_K_M.gguf"), []byte("q4data"), 0o644)
+	// MLX model (should have quant: null).
+	mlxDir := filepath.Join(shelfRoot, "mlx", "mlx-community", "Qwen3-0.6B-4bit")
+	os.MkdirAll(mlxDir, 0o755)
+	os.WriteFile(filepath.Join(mlxDir, "config.json"), []byte("{}"), 0o644)
+	// Safetensors model (should have quant: null).
+	safeDir := filepath.Join(shelfRoot, "safetensors", "Qwen", "Qwen3-0.6B")
+	os.MkdirAll(safeDir, 0o755)
+	os.WriteFile(filepath.Join(safeDir, "model.safetensors"), []byte("{}"), 0o644)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdList([]string{"--json"})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	// Parse as raw JSON to check quant field presence.
+	var rawEntries []map[string]interface{}
+	if err := json.Unmarshal(out, &rawEntries); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, out)
+	}
+	if len(rawEntries) != 3 {
+		t.Fatalf("expected 3 entries, got %d: %s", len(rawEntries), out)
+	}
+
+	// GGUF entry should have quant set.
+	var foundGGUF, foundMLX, foundSafe bool
+	for _, e := range rawEntries {
+		switch e["repo_id"] {
+		case "unsloth/Qwen3-0.6B-GGUF":
+			foundGGUF = true
+			if e["format"] != "gguf" {
+				t.Errorf("gguf format mismatch: %v", e)
+			}
+			quant, ok := e["quant"]
+			if !ok {
+				t.Error("GGUF entry missing 'quant' field")
+			} else if quant != "Q4_K_M" {
+				t.Errorf("GGUF quant = %v, want 'Q4_K_M'", quant)
+			}
+		case "mlx-community/Qwen3-0.6B-4bit":
+			foundMLX = true
+			quant, ok := e["quant"]
+			if !ok {
+				t.Error("MLX entry missing 'quant' field (should be null, not absent)")
+			} else if quant != nil {
+				t.Errorf("MLX quant = %v, want nil", quant)
+			}
+		case "Qwen/Qwen3-0.6B":
+			foundSafe = true
+			quant, ok := e["quant"]
+			if !ok {
+				t.Error("safetensors entry missing 'quant' field (should be null, not absent)")
+			} else if quant != nil {
+				t.Errorf("safetensors quant = %v, want nil", quant)
+			}
+		}
+	}
+	if !foundGGUF {
+		t.Error("missing GGUF entry")
+	}
+	if !foundMLX {
+		t.Error("missing MLX entry")
+	}
+	if !foundSafe {
+		t.Error("missing safetensors entry")
+	}
+}

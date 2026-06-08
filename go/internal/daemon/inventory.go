@@ -22,6 +22,27 @@ type InventoryEntry struct {
 	LastAccessed time.Time `json:"last_accessed"`
 }
 
+// MarshalJSON ensures "quant" is always emitted (null when empty).
+func (e InventoryEntry) MarshalJSON() ([]byte, error) {
+	type Alias InventoryEntry
+	if e.Quant == "" {
+		return json.Marshal(struct {
+			RepoID       string  `json:"repo_id"`
+			Format       string  `json:"format"`
+			Quant        *string `json:"quant"`
+			SizeBytes    int64   `json:"size_bytes"`
+			LastAccessed time.Time `json:"last_accessed"`
+		}{
+			RepoID:       e.RepoID,
+			Format:       e.Format,
+			Quant:        nil,
+			SizeBytes:    e.SizeBytes,
+			LastAccessed: e.LastAccessed,
+		})
+	}
+	return json.Marshal(Alias(e))
+}
+
 // Key returns the unique identity for this entry: repo_id + format + quant.
 // Quant is uppercased to ensure stable keys regardless of filename casing.
 func (e *InventoryEntry) Key() string {

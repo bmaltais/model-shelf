@@ -18,11 +18,12 @@ func cmdRole(args []string) int {
 	jsonOutput := flags["json"] == "true"
 
 	if len(positional) < 1 {
-		fmt.Println("Usage: model-shelf role <set|add|remove> <roles> [--json]")
+		fmt.Println("Usage: model-shelf role <get|set|add|remove> [<roles>] [--json]")
 		fmt.Println()
 		fmt.Println("Manage node roles.")
 		fmt.Println()
 		fmt.Println("Actions:")
+		fmt.Println("  get             Show current roles (read-only)")
 		fmt.Println("  set <roles>     Set roles (replaces all existing roles)")
 		fmt.Println("  add <roles>     Add roles to the current set")
 		fmt.Println("  remove <roles>  Remove roles from the current set")
@@ -37,15 +38,49 @@ func cmdRole(args []string) int {
 	action := positional[0]
 
 	if flags["help"] == "true" {
-		fmt.Printf("Usage: model-shelf role %s <roles> [--json]\n", action)
+		if action == "get" {
+			fmt.Println("Usage: model-shelf role get [--json]")
+		} else {
+			fmt.Printf("Usage: model-shelf role %s <roles> [--json]\n", action)
+		}
 		fmt.Println()
 		fmt.Println("Roles are comma-separated: controller,store,executor")
 		return 0
 	}
 
-	if action != "set" && action != "add" && action != "remove" {
+	// Validate action.
+	if action != "set" && action != "add" && action != "remove" && action != "get" {
 		emitError(jsonOutput, fmt.Sprintf("unknown role action: %s", action))
 		return 1
+	}
+
+	// "get" is read-only: no roles argument needed.
+	if action == "get" {
+		if len(positional) > 1 {
+			emitError(jsonOutput, "usage: model-shelf role get [--json]\n(get is read-only, no roles argument needed)")
+			return 1
+		}
+		if !meshconfig.Exists() {
+			emitError(jsonOutput, "not part of a mesh — run `model-shelf init` and `model-shelf join`")
+			return 1
+		}
+		cfg, err := meshconfig.Load()
+		if err != nil {
+			emitError(jsonOutput, err.Error())
+			return 1
+		}
+		if jsonOutput {
+			type roleOutput struct {
+				Roles []string `json:"roles"`
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(roleOutput{Roles: cfg.Roles}); err != nil {
+				emitError(jsonOutput, err.Error())
+				return 1
+			}
+		} else {
+			fmt.Printf("model-shelf: roles [%s]\n", strings.Join(cfg.Roles, ", "))
+		}
+		return 0
 	}
 
 	if len(positional) < 2 {

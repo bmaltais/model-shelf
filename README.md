@@ -42,6 +42,11 @@ curl -LsSf https://raw.githubusercontent.com/bmaltais/model-shelf/main/install.s
 ```
 
 > **Note:** Ensure `~/.local/bin` is on your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if needed.
+>
+>> **Remote SSH:** Non-interactive SSH sessions (`ssh host 'model-shelf ...'`) do not source `~/.bashrc` or `~/.profile`, so `~/.local/bin` may not be in PATH. Use one of:
+>> - Full path: `ssh host '$HOME/.local/bin/model-shelf ...'`
+>> - Login shell: `ssh host 'bash -lc "model-shelf ..."'`
+>> - Add to `~/.bash_profile` (sourced by login shells including SSH)
 
 ### Go binary (manual download)
 
