@@ -136,6 +136,7 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/peer-inventory", d.handlePeerInventory)
 	mux.HandleFunc("/v1/pull", d.handlePull)
 	mux.HandleFunc("/v1/jobs", d.handleJobs)
+	mux.HandleFunc("/v1/status", d.handleJobs)
 	mux.HandleFunc("/v1/models/", d.handleModelDownload)
 	mux.HandleFunc("/v1/upgrade", d.handleUpgrade)
 
