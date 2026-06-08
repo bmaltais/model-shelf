@@ -18,7 +18,7 @@ func cmdRole(args []string) int {
 	jsonOutput := flags["json"] == "true"
 
 	if len(positional) < 1 {
-		fmt.Println("Usage: model-shelf role <get|set|add|remove> <roles> [--json]")
+		fmt.Println("Usage: model-shelf role <get|set|add|remove> [<roles>] [--json]")
 		fmt.Println()
 		fmt.Println("Manage node roles.")
 		fmt.Println()
@@ -38,7 +38,11 @@ func cmdRole(args []string) int {
 	action := positional[0]
 
 	if flags["help"] == "true" {
-		fmt.Printf("Usage: model-shelf role %s <roles> [--json]\n", action)
+		if action == "get" {
+			fmt.Println("Usage: model-shelf role get [--json]")
+		} else {
+			fmt.Printf("Usage: model-shelf role %s <roles> [--json]\n", action)
+		}
 		fmt.Println()
 		fmt.Println("Roles are comma-separated: controller,store,executor")
 		return 0

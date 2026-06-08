@@ -88,7 +88,7 @@ Usage:
   model-shelf inventory [--json]        List models across all mesh nodes
   model-shelf pull <repo> [--target <node>] Pull a model to a target node
   model-shelf status [<job_id>] [flags]  Show job status
-  model-shelf role <set|add|remove>    Manage node roles
+  model-shelf role <get|set|add|remove>  Manage node roles (get is read-only)
   model-shelf daemon                   Start the mesh daemon (foreground)
   model-shelf service <action>         Manage the system service
   model-shelf upgrade [flags]          Upgrade to the latest (or pinned) release
