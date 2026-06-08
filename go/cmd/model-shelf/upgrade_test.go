@@ -711,3 +711,101 @@ func parsePort(t *testing.T, rawURL string) int {
 	}
 	return port
 }
+
+// TestMeshUpgrade_ElapsedSecondsAlwaysPresent verifies that all nodes in the
+// --json output include "elapsed_seconds", including already_current and skipped nodes.
+func TestMeshUpgrade_ElapsedSecondsAlwaysPresent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Two nodes: one already_current peer, one offline peer.
+	// The controller self-upgrade also returns already_current.
+	target := "1.2.3"
+
+	// Stub self-upgrade to return ErrAlreadyCurrent.
+	orig := runSelfUpgradeFunc
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return selfupgrade.ErrAlreadyCurrent
+	}
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+
+	// Fake daemon returns two peer nodes: one online already_current, one offline.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/nodes":
+			nodes := []daemon.MeshNode{
+				{Name: "self", Address: "127.0.0.1", Port: 0, Status: daemon.StatusOnline, Version: target},
+				{Name: "peer-current", Address: "127.0.0.1", Port: 0, Status: daemon.StatusOnline, Version: target},
+				{Name: "peer-offline", Address: "127.0.0.1", Port: 0, Status: daemon.StatusOffline},
+			}
+			json.NewEncoder(w).Encode(nodes)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	port := parsePort(t, srv.URL)
+
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	cfgContent := fmt.Sprintf(
+		"name = \"self\"\nport = %d\nroles = [\"controller\",\"store\"]\nshelf_root = %q\n",
+		port, filepath.Join(home, "shelf"),
+	)
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cfg, _ := meshconfig.Load()
+	code := runMeshUpgrade(cfg, target, true, false, true)
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput: %s", code, outBytes)
+	}
+
+	var out meshUpgradeOutput
+	if err := json.Unmarshal(outBytes, &out); err != nil {
+		t.Fatalf("failed to parse JSON output: %v\nraw: %s", err, outBytes)
+	}
+
+	// Unmarshal into raw map to verify presence of "elapsed_seconds" key in every node.
+	var rawOut struct {
+		Nodes []map[string]interface{} `json:"nodes"`
+	}
+	if err := json.Unmarshal(outBytes, &rawOut); err != nil {
+		t.Fatalf("failed to parse raw JSON: %v", err)
+	}
+
+	for _, node := range rawOut.Nodes {
+		name, _ := node["name"].(string)
+		if _, ok := node["elapsed_seconds"]; !ok {
+			t.Errorf("node %q: expected 'elapsed_seconds' field in JSON output, but it was absent", name)
+		}
+	}
+
+	// already_current and skipped nodes should have elapsed_seconds = 0.
+	byName := make(map[string]map[string]interface{})
+	for _, node := range rawOut.Nodes {
+		name, _ := node["name"].(string)
+		byName[name] = node
+	}
+	for _, nodeName := range []string{"self", "peer-current", "peer-offline"} {
+		n, ok := byName[nodeName]
+		if !ok {
+			t.Errorf("node %q missing from output", nodeName)
+			continue
+		}
+		elapsed, _ := n["elapsed_seconds"].(float64)
+		if elapsed != 0 {
+			t.Errorf("node %q: expected elapsed_seconds=0 for non-upgraded node, got %v", nodeName, elapsed)
+		}
+	}
+}

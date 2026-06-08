@@ -615,3 +615,62 @@ func TestCmdResolve_InvalidSource(t *testing.T) {
 		t.Errorf("expected validation error about --source, got: %q", string(out))
 	}
 }
+
+// TestCmdResolve_ConfigIsolatesShelfLookup verifies that when --config is provided,
+// resolve does NOT fall back to the daemon's shelf or the default ~/.cache shelf.
+// Only the shelf_root from the specified config should be searched.
+func TestCmdResolve_ConfigIsolatesShelfLookup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Daemon's shelf has the model.
+	daemonShelf := filepath.Join(home, ".cache", "model-shelf", "models")
+	modelDir := filepath.Join(daemonShelf, "gguf", "unsloth", "Qwen3-0.6B-GGUF")
+	os.MkdirAll(modelDir, 0o755)
+	os.WriteFile(filepath.Join(modelDir, "Qwen3-0.6B-Q4_K_M.gguf"), []byte("daemon model"), 0o644)
+
+	// Alt config points to a separate empty shelf.
+	altShelf := filepath.Join(home, "alt-shelf")
+	os.MkdirAll(filepath.Join(altShelf, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(altShelf, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(altShelf, "safetensors"), 0o755)
+
+	altCfgPath := filepath.Join(home, "alt-config.toml")
+	cfgContent := "shelf_root = \"" + altShelf + "\"\nallow_downloads = false\n"
+	os.WriteFile(altCfgPath, []byte(cfgContent), 0o644)
+
+	// Also set up a mesh config so queryMeshPeers could potentially be called.
+	meshCfgDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(meshCfgDir, 0o755)
+	// Point mesh config to daemon's shelf — this must NOT be queried.
+	meshCfgContent := "name = \"self\"\nport = 8844\nroles = [\"store\"]\nshelf_root = \"" + daemonShelf + "\"\n"
+	os.WriteFile(filepath.Join(meshCfgDir, "config.toml"), []byte(meshCfgContent), 0o644)
+
+	// Capture stdout.
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdResolve([]string{
+		"unsloth/Qwen3-0.6B-GGUF", "--quant", "Q4_K_M",
+		"--no-download", "--json",
+		"--config", altCfgPath,
+	})
+
+	w.Close()
+	os.Stdout = oldStdout
+	outBytes, _ := io.ReadAll(r)
+
+	// Must be a miss (exit 1) — daemon shelf must not be consulted.
+	if code != 1 {
+		t.Errorf("expected exit code 1 (miss from isolated shelf), got %d\noutput: %s", code, outBytes)
+	}
+
+	var result resolver.ResolveResult
+	if err := json.Unmarshal(outBytes, &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v\noutput: %s", err, outBytes)
+	}
+	if result.Status != "missing" {
+		t.Errorf("expected status 'missing', got %q (daemon shelf must not be searched when --config is given)", result.Status)
+	}
+}

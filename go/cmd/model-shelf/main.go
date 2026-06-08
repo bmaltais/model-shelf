@@ -291,10 +291,16 @@ func cmdResolve(args []string) int {
 		quant = ""
 	}
 
+	// --config was provided explicitly: scope all lookups to that config's
+	// shelf only. Do not consult the daemon's mesh peers or the default
+	// ~/.cache fallback — the caller wants strict isolation.
+	configIsolated := flags["config"] != ""
+
 	// First check local shelf (without downloading).
 	localCfg := &resolver.Config{
 		ShelfRoot:      cfg.ShelfRoot,
 		AllowDownloads: false,
+		Isolated:       configIsolated,
 	}
 	result, err := resolver.ResolveModel(localCfg, repoID, format, quant)
 	if err != nil {
@@ -303,7 +309,9 @@ func cmdResolve(args []string) int {
 	}
 
 	// If not found locally, check mesh peers and attempt peer transfer before HF.
-	if result.Status == "missing" && cfg.PreferSource != "hf" {
+	// Skip when --config was provided: mesh peers belong to the daemon's shelf,
+	// not to the caller's isolated config.
+	if result.Status == "missing" && cfg.PreferSource != "hf" && !configIsolated {
 		meshPeers := queryMeshPeers(repoID, format, quant)
 		if len(meshPeers) > 0 {
 			if cfg.AllowDownloads && format == "gguf" {
@@ -941,6 +949,12 @@ func cmdList(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
+	}
+
+	// --config was provided explicitly: scope listing to that config's shelf only.
+	// Do not add volume mounts or ~/.cache fallback — the caller wants strict isolation.
+	if flags["config"] != "" {
+		cfg.Isolated = true
 	}
 
 	// When shelf_root is explicitly configured but isn't accessible, error

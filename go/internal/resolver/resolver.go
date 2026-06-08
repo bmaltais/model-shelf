@@ -46,6 +46,10 @@ type Config struct {
 	ShelfRoot      string
 	AllowDownloads bool
 	PreferSource   string // "auto" (default), "hf", "peer"
+	// Isolated, when true, restricts ListShelfCandidates to only ShelfRoot —
+	// no volume discovery and no ~/.cache fallback. Used when --config is
+	// provided explicitly so the caller's shelf is the only source of truth.
+	Isolated bool
 }
 
 // Check represents a single shelf lookup attempt in the resolve log.
@@ -306,6 +310,13 @@ func ListShelfCandidates(cfg *Config) []string {
 
 	if cfg.ShelfRoot != "" {
 		add(cfg.ShelfRoot)
+	}
+
+	// Isolated mode: only the explicitly configured shelf_root is used.
+	// No volume discovery, no ~/.cache fallback. This is set when --config is
+	// provided so the caller's config is the sole source of truth.
+	if cfg.Isolated {
+		return out
 	}
 
 	vDir := volumesDir()

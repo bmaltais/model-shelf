@@ -453,3 +453,60 @@ func TestCmdList_NonExistentShelfRoot_Errors_JSON(t *testing.T) {
 		t.Errorf("expected error about missing shelf, got stderr: %q", errOut)
 	}
 }
+
+// TestCmdList_ConfigIsolatesShelfLookup verifies that when --config is provided,
+// list only returns models from that config's shelf_root.
+// It must NOT include models from the default ~/.cache fallback or other volumes.
+func TestCmdList_ConfigIsolatesShelfLookup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Default fallback shelf has a model.
+	fallback := filepath.Join(home, ".cache", "model-shelf", "models")
+	fallbackModel := filepath.Join(fallback, "gguf", "publisher", "model-B-GGUF")
+	os.MkdirAll(fallbackModel, 0o755)
+	os.WriteFile(filepath.Join(fallbackModel, "model-B-Q8_0.gguf"), []byte("fallback"), 0o644)
+
+	// Alt shelf (the one --config points to) has a different model.
+	altShelf := filepath.Join(home, "alt-shelf")
+	altModel := filepath.Join(altShelf, "gguf", "publisher", "model-A-GGUF")
+	os.MkdirAll(altModel, 0o755)
+	os.WriteFile(filepath.Join(altModel, "model-A-Q4_K_M.gguf"), []byte("alt"), 0o644)
+	os.MkdirAll(filepath.Join(altShelf, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(altShelf, "safetensors"), 0o755)
+
+	// Write alt config.
+	altCfgPath := filepath.Join(home, "alt-config.toml")
+	cfgContent := "shelf_root = \"" + altShelf + "\"\nallow_downloads = false\n"
+	os.WriteFile(altCfgPath, []byte(cfgContent), 0o644)
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdList([]string{"--json", "--config", altCfgPath})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d: %s", code, out)
+	}
+
+	var entries []ShelfEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, out)
+	}
+
+	// Only model-A from alt-shelf should appear; model-B from fallback must not.
+	for _, e := range entries {
+		if e.RepoID == "publisher/model-B-GGUF" {
+			t.Errorf("model-B from fallback shelf must not appear when --config is provided; got entries: %s", out)
+		}
+	}
+	if len(entries) != 1 || entries[0].RepoID != "publisher/model-A-GGUF" {
+		t.Errorf("expected only model-A from alt-shelf, got: %s", out)
+	}
+}

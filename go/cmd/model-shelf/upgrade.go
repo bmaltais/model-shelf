@@ -23,7 +23,7 @@ import (
 type nodeUpgradeResult struct {
 	Name           string  `json:"name"`
 	Status         string  `json:"status"`
-	ElapsedSeconds float64 `json:"elapsed_seconds,omitempty"`
+	ElapsedSeconds float64 `json:"elapsed_seconds"`
 	Reason         string  `json:"reason,omitempty"`
 }
 
@@ -252,6 +252,7 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 	selfResult.ElapsedSeconds = time.Since(selfStart).Seconds()
 	if errors.Is(selfErr, selfupgrade.ErrAlreadyCurrent) {
 		selfResult.Status = "already_current"
+		selfResult.ElapsedSeconds = 0 // not meaningful for already_current; zero for schema consistency
 		if !jsonOutput {
 			fmt.Fprintf(stdout, "  – %-*s  already current\n", nameWidth, cfg.Name)
 		}
