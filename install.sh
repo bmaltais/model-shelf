@@ -69,6 +69,20 @@ chmod +x "${TARGET}"
 VERSION=$("${TARGET}" version 2>/dev/null) && echo "Installed: $VERSION" \
   || echo "warning: installed binary but could not verify (may need different platform)" >&2
 
+# Restart the Linux systemd user service if it is already running, so the new
+# binary takes effect without a manual restart.  Best-effort: a restart failure
+# must not abort the installer under set -e (service may fail with the new
+# binary, transient unit issues, or container environments without systemd).
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl --user is-active model-shelf >/dev/null 2>&1; then
+    if systemctl --user restart model-shelf >/dev/null 2>&1; then
+      echo "Daemon service restarted."
+    else
+      echo "warning: failed to restart model-shelf service — run 'systemctl --user restart model-shelf' manually" >&2
+    fi
+  fi
+fi
+
 # Ensure PATH includes INSTALL_DIR for non-interactive sessions (e.g. SSH).
 # We append to ~/.profile which is sourced by login shells (including non-interactive SSH).
 PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""

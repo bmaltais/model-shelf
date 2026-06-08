@@ -28,6 +28,7 @@ var daemonRestart func()
 // upgradeRequest is the body of POST /v1/upgrade.
 type upgradeRequest struct {
 	Version string `json:"version"`
+	Force   bool   `json:"force,omitempty"`
 }
 
 // upgradeResponse is returned by POST /v1/upgrade.
@@ -85,7 +86,7 @@ func (d *Daemon) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	target := strings.TrimPrefix(req.Version, "v")
 	current := strings.TrimPrefix(d.cfg.Version, "v")
 
-	if current != "" && current == target {
+	if current != "" && current == target && !req.Force {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(upgradeResponse{Status: "already_current"})
 		return

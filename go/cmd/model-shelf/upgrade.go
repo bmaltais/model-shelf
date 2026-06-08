@@ -155,6 +155,15 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		}
 	}
 
+	// With --force, promote already-current peers into the upgrade set.
+	// Track them separately so the confirmation table can show the right label.
+	var forceUpgrade []daemon.MeshNode
+	if force {
+		forceUpgrade = alreadyCurrent
+		needsUpgrade = append(needsUpgrade, alreadyCurrent...)
+		alreadyCurrent = nil
+	}
+
 	// 3. Print confirmation table.
 	nameWidth := 6 // minimum column width; computed from peers only
 	if !jsonOutput {
@@ -174,8 +183,16 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 			}
 		}
 
+		forceSet := make(map[string]bool, len(forceUpgrade))
+		for _, p := range forceUpgrade {
+			forceSet[p.Name] = true
+		}
 		for _, p := range needsUpgrade {
-			fmt.Fprintf(stdout, "  %-*s  %s → %s   will upgrade\n", nameWidth, p.Name, nodeVersion(p.Version), target)
+			if forceSet[p.Name] {
+				fmt.Fprintf(stdout, "  %-*s  %s → %s   will upgrade (force)\n", nameWidth, p.Name, nodeVersion(p.Version), target)
+			} else {
+				fmt.Fprintf(stdout, "  %-*s  %s → %s   will upgrade\n", nameWidth, p.Name, nodeVersion(p.Version), target)
+			}
 		}
 		for _, p := range alreadyCurrent {
 			fmt.Fprintf(stdout, "  %-*s  %s            already current — skip\n", nameWidth, p.Name, nodeVersion(p.Version))
@@ -227,7 +244,7 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		go func(p daemon.MeshNode, w int) {
 			defer wg.Done()
 			start := time.Now()
-			r := upgradePeerNode(p, target, cfg.MeshKey)
+			r := upgradePeerNode(p, target, cfg.MeshKey, force)
 			r.ElapsedSeconds = time.Since(start).Seconds()
 			if !jsonOutput {
 				if r.Status == "upgraded" {
@@ -297,12 +314,20 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 	return 0
 }
 
+// peerUpgradeRequest is the JSON body sent to POST /v1/upgrade on a peer node.
+type peerUpgradeRequest struct {
+	Version string `json:"version"`
+	Force   bool   `json:"force,omitempty"`
+}
+
 // upgradePeerNode sends an upgrade request to a peer and polls health until the
 // peer reports the new version or the 60s deadline expires.
-func upgradePeerNode(peer daemon.MeshNode, target, meshKey string) nodeUpgradeResult {
+// force is forwarded to every peer in the needsUpgrade list; for version-mismatched
+// peers the daemon's already_current short-circuit never fires anyway.
+func upgradePeerNode(peer daemon.MeshNode, target, meshKey string, force bool) nodeUpgradeResult {
 	target = strings.TrimPrefix(target, "v")
 
-	body, err := json.Marshal(map[string]string{"version": target})
+	body, err := json.Marshal(peerUpgradeRequest{Version: target, Force: force})
 	if err != nil {
 		return nodeUpgradeResult{Name: peer.Name, Status: "failed", Reason: fmt.Sprintf("marshal request: %v", err)}
 	}

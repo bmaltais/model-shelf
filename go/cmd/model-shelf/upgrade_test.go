@@ -96,7 +96,7 @@ func TestUpgradePeerNode_AlreadyCurrent(t *testing.T) {
 	port := parsePort(t, srv.URL)
 	peer.Port = port
 
-	r := upgradePeerNode(peer, "1.0.0", "")
+	r := upgradePeerNode(peer, "1.0.0", "", false)
 	if r.Status != "upgraded" {
 		t.Errorf("expected 'upgraded' for already_current, got %q", r.Status)
 	}
@@ -125,7 +125,7 @@ func TestUpgradePeerNode_UpgradeAndPollSuccess(t *testing.T) {
 
 	peer.Port = parsePort(t, srv.URL)
 
-	r := upgradePeerNode(peer, "1.0.0", "")
+	r := upgradePeerNode(peer, "1.0.0", "", false)
 	if r.Status != "upgraded" {
 		t.Errorf("expected 'upgraded', got %q (reason: %s)", r.Status, r.Reason)
 	}
@@ -133,7 +133,7 @@ func TestUpgradePeerNode_UpgradeAndPollSuccess(t *testing.T) {
 
 func TestUpgradePeerNode_ConnectionRefused(t *testing.T) {
 	peer := daemon.MeshNode{Name: "node-c", Address: "127.0.0.1", Port: 1}
-	r := upgradePeerNode(peer, "1.0.0", "")
+	r := upgradePeerNode(peer, "1.0.0", "", false)
 	if r.Status != "failed" {
 		t.Errorf("expected 'failed' for connection refused, got %q", r.Status)
 	}
@@ -496,7 +496,7 @@ func TestUpgradePeerNode_MeshKeyForwarded(t *testing.T) {
 
 	peer.Port = parsePort(t, combinedSrv.URL)
 	_ = time.Now() // avoid unused import
-	r := upgradePeerNode(peer, "3.0.0", "secret-key")
+	r := upgradePeerNode(peer, "3.0.0", "secret-key", false)
 
 	if r.Status != "upgraded" {
 		t.Errorf("expected upgraded, got %q", r.Status)
@@ -523,6 +523,91 @@ func TestCmdUpgrade_StandaloneAlreadyCurrent_NoRestart(t *testing.T) {
 	code := cmdUpgrade([]string{"--version", "1.0.0", "--yes"})
 	if code != 0 {
 		t.Fatalf("expected exit 0 when already current, got %d", code)
+	}
+}
+
+// TestUpgradeForceOnAlreadyCurrent verifies that when --force is set, peers already at
+// the target version are included in the upgrade fan-out instead of being skipped.
+func TestUpgradeForceOnAlreadyCurrent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return nil
+	}
+
+	var upgradeHit bool
+	var gotForce bool
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost:
+			upgradeHit = true
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+			gotForce, _ = body["force"].(bool)
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		case r.URL.Path == "/v1/health":
+			json.NewEncoder(w).Encode(map[string]string{"version": "1.0.0"})
+		}
+	}))
+	defer peerSrv.Close()
+
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline, Version: "1.0.0"},
+		{Name: "peer1", Address: "127.0.0.1", Port: parsePort(t, peerSrv.URL), Roles: []string{"store"}, Status: daemon.StatusOnline, Version: "1.0.0"},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	oldOut := os.Stdout
+	rp, wp, _ := os.Pipe()
+	os.Stdout = wp
+
+	// force=true — peer already at target should receive an upgrade request.
+	code := runMeshUpgrade(cfg, "1.0.0", true, true, true)
+
+	wp.Close()
+	os.Stdout = oldOut
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !upgradeHit {
+		t.Error("POST /v1/upgrade should be sent to peer already at target version when --force is set")
+	}
+	if !gotForce {
+		t.Error("force=true should be forwarded in the POST /v1/upgrade request body")
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(rp)
+	var result meshUpgradeOutput
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, buf.String())
+	}
+	byName := make(map[string]nodeUpgradeResult)
+	for _, n := range result.Nodes {
+		byName[n.Name] = n
+	}
+	if byName["peer1"].Status != "upgraded" {
+		t.Errorf("peer1: expected 'upgraded' with --force, got %q", byName["peer1"].Status)
 	}
 }
 
