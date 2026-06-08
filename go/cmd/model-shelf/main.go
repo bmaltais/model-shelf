@@ -249,6 +249,8 @@ func cmdResolve(args []string) int {
 		fmt.Println("  --config <path>    Override config file path")
 		return 0
 	}
+	jsonOutput := flags["json"] == "true"
+
 	if len(positional) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: model-shelf resolve <repo_id> [--quant Q] [--format F] [--source S] [--no-download] [--json]\n")
 		return 1
@@ -257,7 +259,7 @@ func cmdResolve(args []string) int {
 
 	cfg, err := loadCfg(flags["config"])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 	if _, ok := flags["no-download"]; ok {
@@ -276,7 +278,7 @@ func cmdResolve(args []string) int {
 	case "auto", "hf", "peer":
 		// valid
 	default:
-		fmt.Fprintf(os.Stderr, "error: --source must be one of: auto, hf, peer\n")
+		emitError(jsonOutput, "--source must be one of: auto, hf, peer")
 		return 1
 	}
 
@@ -304,7 +306,7 @@ func cmdResolve(args []string) int {
 	}
 	result, err := resolver.ResolveModel(localCfg, repoID, format, quant)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
@@ -338,12 +340,12 @@ func cmdResolve(args []string) int {
 	if result.Status == "missing" && cfg.AllowDownloads && cfg.PreferSource != "peer" {
 		result, err = resolver.ResolveModel(cfg, repoID, format, quant)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			emitError(jsonOutput, err.Error())
 			return 1
 		}
 	}
 
-	if flags["json"] == "true" {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(result)
@@ -871,14 +873,15 @@ func cmdFind(args []string) int {
 		fmt.Println("  --json             Emit JSON output")
 		return 0
 	}
+	jsonOutput := flags["json"] == "true"
+
 	if len(positional) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: model-shelf find <query> [--format F] [--limit N] [--json]\n")
 		return 1
 	}
 	query := strings.Join(positional, " ")
 	if strings.TrimSpace(query) == "" {
-		fmt.Fprintf(os.Stderr, "error: query cannot be empty\n")
-		fmt.Fprintf(os.Stderr, "usage: model-shelf find <query> [--format F] [--limit N] [--json]\n")
+		emitError(jsonOutput, "query cannot be empty")
 		return 1
 	}
 	format := flags["format"]
@@ -886,7 +889,7 @@ func cmdFind(args []string) int {
 	if l, ok := flags["limit"]; ok {
 		var parsed int
 		if _, err := fmt.Sscanf(l, "%d", &parsed); err != nil || parsed <= 0 {
-			fmt.Fprintf(os.Stderr, "error: --limit must be a positive integer, got %q\n", l)
+			emitError(jsonOutput, fmt.Sprintf("--limit must be a positive integer, got %q", l))
 			return 1
 		}
 		limit = parsed
@@ -894,11 +897,11 @@ func cmdFind(args []string) int {
 
 	results, err := search.FindModels(query, format, limit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
-	if flags["json"] == "true" {
+	if jsonOutput {
 		if results == nil {
 			results = []search.FindResult{}
 		}
@@ -945,9 +948,11 @@ func cmdList(args []string) int {
 		return 0
 	}
 
+	jsonOutput := flags["json"] == "true"
+
 	cfg, err := loadCfg(flags["config"])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		emitError(jsonOutput, err.Error())
 		return 1
 	}
 
@@ -961,14 +966,14 @@ func cmdList(args []string) int {
 	// consistently with `resolve` rather than silently falling back.
 	if cfg.ShelfRoot != "" {
 		if err := resolver.CheckStorageAvailable(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			emitError(jsonOutput, err.Error())
 			return 1
 		}
 	}
 
 	candidates := resolver.ListShelfCandidates(cfg)
 	if len(candidates) == 0 {
-		fmt.Fprintf(os.Stderr, "error: no shelf directories found\n")
+		emitError(jsonOutput, "no shelf directories found")
 		return 1
 	}
 
@@ -984,7 +989,7 @@ func cmdList(args []string) int {
 		allEntries = []ShelfEntry{}
 	}
 
-	if flags["json"] == "true" {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(allEntries); err != nil {

@@ -14,8 +14,11 @@ import (
 )
 
 func cmdRole(args []string) int {
-	if len(args) < 1 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Println("Usage: model-shelf role <set|add|remove> <roles>")
+	positional, flags := parseFlags(args)
+	jsonOutput := flags["json"] == "true"
+
+	if len(positional) < 1 {
+		fmt.Println("Usage: model-shelf role <set|add|remove> <roles> [--json]")
 		fmt.Println()
 		fmt.Println("Manage node roles.")
 		fmt.Println()
@@ -24,25 +27,29 @@ func cmdRole(args []string) int {
 		fmt.Println("  add <roles>     Add roles to the current set")
 		fmt.Println("  remove <roles>  Remove roles from the current set")
 		fmt.Println()
+		fmt.Println("Flags:")
+		fmt.Println("  --json          Emit JSON output")
+		fmt.Println()
 		fmt.Println("Roles are comma-separated: controller,store,executor")
 		return 0
 	}
 
-	action := args[0]
-	if action != "set" && action != "add" && action != "remove" {
-		fmt.Fprintf(os.Stderr, "unknown role action: %s\n", action)
-		fmt.Fprintf(os.Stderr, "usage: model-shelf role <set|add|remove> <roles>\n")
-		return 1
-	}
+	action := positional[0]
 
-	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+	if flags["help"] == "true" {
 		fmt.Printf("Usage: model-shelf role %s <roles>\n", action)
 		fmt.Println()
 		fmt.Println("Roles are comma-separated: controller,store,executor")
 		return 0
 	}
 
-	if len(args) < 2 {
+	if action != "set" && action != "add" && action != "remove" {
+		fmt.Fprintf(os.Stderr, "unknown role action: %s\n", action)
+		fmt.Fprintf(os.Stderr, "usage: model-shelf role <set|add|remove> <roles>\n")
+		return 1
+	}
+
+	if len(positional) < 2 {
 		fmt.Fprintf(os.Stderr, "error: roles argument is required\n")
 		fmt.Fprintf(os.Stderr, "usage: model-shelf role %s <roles>\n", action)
 		return 1
@@ -62,7 +69,7 @@ func cmdRole(args []string) int {
 	// Parse and validate the provided roles.
 	validRoles := map[string]bool{"controller": true, "store": true, "executor": true}
 	var inputRoles []string
-	for _, r := range strings.Split(args[1], ",") {
+	for _, r := range strings.Split(positional[1], ",") {
 		r = strings.TrimSpace(r)
 		if r == "" {
 			continue
@@ -117,7 +124,17 @@ func cmdRole(args []string) int {
 		return 1
 	}
 
-	fmt.Printf("model-shelf: roles updated to [%s]\n", strings.Join(cfg.Roles, ", "))
+	if jsonOutput {
+		type roleOutput struct {
+			Roles []string `json:"roles"`
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(roleOutput{Roles: cfg.Roles}); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+	} else {
+		fmt.Printf("model-shelf: roles updated to [%s]\n", strings.Join(cfg.Roles, ", "))
+	}
 
 	// Gossip the role change to peers.
 	gossipRoleChange(cfg)
