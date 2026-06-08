@@ -259,3 +259,25 @@ func TestHealthEndpoint_NoGPU(t *testing.T) {
 		t.Errorf("expected gpu to be null on node without GPU, got %v", gpuVal)
 	}
 }
+
+func TestStatusRouteAlias(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: t.TempDir(),
+	}
+	d := New(cfg)
+	mux := d.newMux()
+
+	for _, path := range []string{"/v1/jobs", "/v1/status"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("path %s: expected 200, got %d", path, w.Code)
+		}
+	}
+}

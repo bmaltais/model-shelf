@@ -124,8 +124,7 @@ func New(cfg *meshconfig.Config) *Daemon {
 	return d
 }
 
-// Run starts the HTTP server and blocks until shutdown.
-func (d *Daemon) Run() error {
+func (d *Daemon) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", d.handleHealth)
 	mux.HandleFunc("/v1/join", d.handleJoin)
@@ -139,7 +138,12 @@ func (d *Daemon) Run() error {
 	mux.HandleFunc("/v1/status", d.handleJobs)
 	mux.HandleFunc("/v1/models/", d.handleModelDownload)
 	mux.HandleFunc("/v1/upgrade", d.handleUpgrade)
+	return mux
+}
 
+// Run starts the HTTP server and blocks until shutdown.
+func (d *Daemon) Run() error {
+	mux := d.newMux()
 	handler := d.authMiddleware(mux)
 
 	addr := fmt.Sprintf(":%d", d.cfg.Port)
