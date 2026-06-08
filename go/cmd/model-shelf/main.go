@@ -671,8 +671,12 @@ func cmdInit(args []string) int {
 
 	// Check if config already exists (unless --force).
 	force := flags["force"] == "true"
-	_, statErr := os.Stat(configPath)
+	statInfo, statErr := os.Stat(configPath)
 	configExists := statErr == nil
+	if configExists && statInfo.IsDir() {
+		fmt.Fprintf(os.Stderr, "error: %s is a directory, not a config file\n", configPath)
+		return 1
+	}
 	if configExists && !force {
 		fmt.Fprintf(os.Stderr, "error: %s already exists (use --force to overwrite)\n", configPath)
 		return 1

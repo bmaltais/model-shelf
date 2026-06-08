@@ -650,12 +650,27 @@ func TestInitCustomConfigPath(t *testing.T) {
 	customDir := filepath.Join(t.TempDir(), "custom-mesh")
 	customConfig := filepath.Join(customDir, "config.toml")
 
+	oldOut := os.Stdout
+	oldErr := os.Stderr
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	os.Stdout = wOut
+	os.Stderr = wErr
+
 	code := cmdInit([]string{
 		"--role", "controller",
 		"--shelf", shelfPath,
 		"--name", "testnode",
 		"--config", customConfig,
 	})
+
+	wOut.Close()
+	wErr.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+	io.ReadAll(rOut)
+	io.ReadAll(rErr)
+
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d", code)
 	}
