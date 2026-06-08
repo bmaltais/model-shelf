@@ -25,3 +25,7 @@ config.local.toml
 .coverage
 htmlcov/
 graphify-out/
+
+# Go build artifacts
+go/model-shelf
+go/model-shelf.exe

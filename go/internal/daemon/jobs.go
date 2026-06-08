@@ -308,7 +308,6 @@ func (s *JobStore) ExpireStaleJobsForPeer(peerName string, freshJobs []Job) {
 			j.Status = JobFailed
 			j.Error = "job interrupted: target daemon restarted"
 			j.DoneAt = &now
-			s.jobs[id] = j
 		}
 	}
 }
