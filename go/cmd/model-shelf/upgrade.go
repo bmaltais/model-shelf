@@ -314,16 +314,20 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 	return 0
 }
 
+// peerUpgradeRequest is the JSON body sent to POST /v1/upgrade on a peer node.
+type peerUpgradeRequest struct {
+	Version string `json:"version"`
+	Force   bool   `json:"force,omitempty"`
+}
+
 // upgradePeerNode sends an upgrade request to a peer and polls health until the
 // peer reports the new version or the 60s deadline expires.
+// force is forwarded to every peer in the needsUpgrade list; for version-mismatched
+// peers the daemon's already_current short-circuit never fires anyway.
 func upgradePeerNode(peer daemon.MeshNode, target, meshKey string, force bool) nodeUpgradeResult {
 	target = strings.TrimPrefix(target, "v")
 
-	reqBody := map[string]interface{}{"version": target}
-	if force {
-		reqBody["force"] = true
-	}
-	body, err := json.Marshal(reqBody)
+	body, err := json.Marshal(peerUpgradeRequest{Version: target, Force: force})
 	if err != nil {
 		return nodeUpgradeResult{Name: peer.Name, Status: "failed", Reason: fmt.Sprintf("marshal request: %v", err)}
 	}
