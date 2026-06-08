@@ -85,6 +85,10 @@ func uninstall() error {
 	return nil
 }
 
+// refreshUnit is a no-op on macOS: launchd reads the plist directly on
+// each load and there is no separate daemon-reload step.
+func refreshUnit(_ string) error { return nil }
+
 func start() error {
 	return launchctl("start", serviceName)
 }

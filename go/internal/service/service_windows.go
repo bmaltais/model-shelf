@@ -50,6 +50,10 @@ func uninstall() error {
 	return nil
 }
 
+// refreshUnit is a no-op on Windows: the SCM does not use on-disk unit
+// files that need refreshing between binary replacements.
+func refreshUnit(_ string) error { return nil }
+
 func start() error {
 	cmd := exec.Command("sc", "start", serviceName)
 	if out, err := cmd.CombinedOutput(); err != nil {

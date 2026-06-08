@@ -82,6 +82,9 @@ func cmdUpgrade(args []string) int {
 
 	status, statusErr := service.GetStatus()
 	if statusErr == nil && status.Installed {
+		if refreshErr := service.RefreshUnit(); refreshErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not refresh unit file: %v\n", refreshErr)
+		}
 		if restartErr := service.Restart(); restartErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not restart service: %v\n", restartErr)
 			fmt.Fprintf(os.Stderr, "  Run 'model-shelf service restart' to apply the upgrade.\n")
@@ -265,6 +268,9 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		// Restart service after successful self-upgrade (binary was replaced).
 		status, statusErr := service.GetStatus()
 		if statusErr == nil && status.Installed {
+			if refreshErr := service.RefreshUnit(); refreshErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not refresh unit file: %v\n", refreshErr)
+			}
 			if restartErr := service.Restart(); restartErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not restart service: %v\n", restartErr)
 			} else {
