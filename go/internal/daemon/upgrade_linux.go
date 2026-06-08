@@ -3,29 +3,23 @@
 package daemon
 
 import (
-	"log"
 	"os"
-	"os/exec"
-	"syscall"
 )
 
 func init() {
 	daemonRestart = defaultDaemonRestart
 }
 
-// defaultDaemonRestart spawns a detached shell that waits for the daemon
-// process to exit and then starts the service via systemctl.
+// defaultDaemonRestart exits the daemon cleanly so that systemd restarts it
+// via the Restart=always policy in the unit file. The unit file is rewritten
+// with the new policy (and daemon-reload is run) by serviceRefreshUnit before
+// this function is called, so the new policy is active before os.Exit fires.
 //
-// The detached shell runs in its own session (Setsid: true) so that it is
-// placed outside the service's cgroup. Without this, systemd would send
-// SIGTERM to every process in the cgroup — including the systemctl
-// subprocess — when the daemon exits, preventing the start command from
-// completing.
+// The previous approach of spawning a detached shell with Setsid=true failed
+// because Setsid only creates a new session — it does not move the child to a
+// different cgroup. On cgroup-v2 systemd kills every process in the service
+// cgroup when the main process exits, including that shell, so the
+// `systemctl start` command never ran.
 func defaultDaemonRestart() {
-	cmd := exec.Command("sh", "-c", "sleep 2 && systemctl --user start model-shelf.service")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		log.Printf("model-shelf daemon: could not spawn detached restart: %v", err)
-	}
 	os.Exit(0)
 }

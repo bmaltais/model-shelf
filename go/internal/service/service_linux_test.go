@@ -27,8 +27,8 @@ func TestUnitContent(t *testing.T) {
 	if !strings.Contains(content, "WantedBy=default.target") {
 		t.Error("unit file should want default.target for user service")
 	}
-	if !strings.Contains(content, "Restart=on-failure") {
-		t.Error("unit file should restart on failure")
+	if !strings.Contains(content, "Restart=always") {
+		t.Error("unit file should use Restart=always so a clean exit after upgrade triggers a systemd restart")
 	}
 	if !strings.Contains(content, "StartLimitIntervalSec=0") {
 		t.Error("unit file must contain StartLimitIntervalSec=0 to prevent systemd restart suppression")

@@ -39,8 +39,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart="%s" daemon
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=default.target
