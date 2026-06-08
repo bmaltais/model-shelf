@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -101,7 +102,15 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 		preferSource = "auto"
 	}
 
-	go d.executePull(jobID, req.RepoID, format, req.Quant, req.Force, preferSource)
+	ctx := d.shutdownCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d.transfers.Add(1)
+	go func() {
+		defer d.transfers.Done()
+		d.executePull(ctx, jobID, req.RepoID, format, req.Quant, req.Force, preferSource)
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
@@ -116,7 +125,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 // It first checks if the model already exists locally, then checks if a peer
 // has the model (preferring LAN transfer), and finally falls back to HF download.
 // preferSource controls source selection: "auto" (default), "hf" (skip peers), "peer" (skip HF).
-func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool, preferSource string) {
+func (d *Daemon) executePull(ctx context.Context, jobID, repoID, format, quant string, force bool, preferSource string) {
 	d.jobs.SetDownloading(jobID)
 	log.Printf("pull: starting download of %s (format=%s, quant=%s, force=%v) job=%s", repoID, format, quant, force, jobID)
 
@@ -143,7 +152,7 @@ func (d *Daemon) executePull(jobID, repoID, format, quant string, force bool, pr
 	if preferSource != "hf" {
 		if peer := d.findPeerWithModel(repoID, format, quant); peer != nil {
 			log.Printf("pull: job %s — model found on peer %s, attempting transfer", jobID, peer.Name)
-			if err := d.transferFromPeer(jobID, peer, repoID, format, quant); err != nil {
+			if err := d.transferFromPeer(ctx, jobID, peer, repoID, format, quant); err != nil {
 				log.Printf("pull: job %s — peer transfer from %s failed: %v, falling back to HF", jobID, peer.Name, err)
 				// Fall through to HF download.
 			} else {

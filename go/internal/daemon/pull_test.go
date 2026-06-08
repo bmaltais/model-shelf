@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -251,7 +252,7 @@ func TestExecutePull_InvalidRepo(t *testing.T) {
 
 	// Create a job for an invalid repo ID (no slash).
 	job := d.jobs.Create("invalid-repo", "mlx", "", "test-node")
-	d.executePull(job.ID, "invalid-repo", "mlx", "", false, "auto")
+	d.executePull(context.Background(), job.ID, "invalid-repo", "mlx", "", false, "auto")
 
 	// Give it a moment — executePull runs synchronously here.
 	got := d.jobs.Get(job.ID)
@@ -286,7 +287,7 @@ func TestExecutePull_AlreadyPresent(t *testing.T) {
 	d := New(cfg)
 
 	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
-	d.executePull(job.ID, "testorg/testmodel", "mlx", "", false, "auto")
+	d.executePull(context.Background(), job.ID, "testorg/testmodel", "mlx", "", false, "auto")
 
 	got := d.jobs.Get(job.ID)
 	if got.Status != JobAlreadyPresent {
@@ -330,7 +331,7 @@ func TestExecutePull_ForceDeletesExisting(t *testing.T) {
 	d.inventory.Touch("testorg/testmodel", "mlx", "", 100)
 
 	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
-	d.executePull(job.ID, "testorg/testmodel", "mlx", "", true, "auto")
+	d.executePull(context.Background(), job.ID, "testorg/testmodel", "mlx", "", true, "auto")
 
 	// The force flag should delete the existing directory.
 	if _, err := os.Stat(mlxDir); err == nil {
@@ -375,7 +376,7 @@ func TestExecutePull_ForceWithCompleteModel(t *testing.T) {
 	d.inventory.Touch("testorg/testmodel", "mlx", "", 1000)
 
 	job := d.jobs.Create("testorg/testmodel", "mlx", "", "test-node")
-	d.executePull(job.ID, "testorg/testmodel", "mlx", "", true, "auto")
+	d.executePull(context.Background(), job.ID, "testorg/testmodel", "mlx", "", true, "auto")
 
 	// With force=true, should NOT return already_present even for complete model.
 	got := d.jobs.Get(job.ID)
