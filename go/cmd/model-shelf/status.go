@@ -164,9 +164,24 @@ func statusAllJobs(addr string, flags map[string]string) int {
 }
 
 func printJobTable(jobs []daemon.Job) {
+	// Determine whether any transfer jobs are present (to decide whether to show SOURCE column).
+	hasTransfer := false
+	for _, j := range jobs {
+		if j.Type == daemon.JobTypeTransfer {
+			hasTransfer = true
+			break
+		}
+	}
+
 	// Column-aligned output.
-	// Headers: JOB ID  MODEL  TARGET  STATUS  PROGRESS  STARTED
-	header := fmt.Sprintf("  %-12s  %-40s  %-12s  %-13s  %-12s  %s", "JOB ID", "MODEL", "TARGET", "STATUS", "PROGRESS", "STARTED")
+	var header string
+	if hasTransfer {
+		// Headers: JOB ID  MODEL  TARGET  SOURCE  STATUS  PROGRESS  STARTED
+		header = fmt.Sprintf("  %-12s  %-40s  %-12s  %-12s  %-13s  %-12s  %s", "JOB ID", "MODEL", "TARGET", "SOURCE", "STATUS", "PROGRESS", "STARTED")
+	} else {
+		// Headers: JOB ID  MODEL  TARGET  STATUS  PROGRESS  STARTED
+		header = fmt.Sprintf("  %-12s  %-40s  %-12s  %-13s  %-12s  %s", "JOB ID", "MODEL", "TARGET", "STATUS", "PROGRESS", "STARTED")
+	}
 	fmt.Println(header)
 	fmt.Println("  " + strings.Repeat("-", len(header)-2))
 
@@ -187,8 +202,17 @@ func printJobTable(jobs []daemon.Job) {
 		progress := progressStr(j)
 		started := relativeTime(j.CreatedAt)
 
-		fmt.Printf("  %-12s  %-40s  %-12s  %-13s  %-12s  %s\n",
-			shortID, model, target, j.Status, progress, started)
+		if hasTransfer {
+			source := j.Source
+			if len(source) > 12 {
+				source = source[:12]
+			}
+			fmt.Printf("  %-12s  %-40s  %-12s  %-12s  %-13s  %-12s  %s\n",
+				shortID, model, target, source, j.Status, progress, started)
+		} else {
+			fmt.Printf("  %-12s  %-40s  %-12s  %-13s  %-12s  %s\n",
+				shortID, model, target, j.Status, progress, started)
+		}
 	}
 }
 

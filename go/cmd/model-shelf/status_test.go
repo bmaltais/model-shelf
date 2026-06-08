@@ -727,3 +727,79 @@ func TestCmdStatus_AllJobs_JSON_ErrorFieldAlwaysPresent(t *testing.T) {
 		t.Errorf("failed job: expected non-empty error, got empty string")
 	}
 }
+
+// TestPrintJobTable_SourceColumnForTransfer verifies that when transfer jobs are
+// present, the table includes a SOURCE column populated with the source node name.
+func TestPrintJobTable_SourceColumnForTransfer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	jobs := []daemon.Job{
+		{
+			ID:              "abc123def456",
+			Type:            daemon.JobTypeTransfer,
+			RepoID:          "TheBloke/TinyLlama-1.1B-GGUF",
+			Format:          "gguf",
+			Target:          "mini2",
+			Source:          "ocilab1",
+			Status:          daemon.JobTransferring,
+			BytesDownloaded: 51_200_000,
+			BytesTotal:      637_800_000,
+			CreatedAt:       now,
+		},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printJobTable(jobs)
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	output := string(out)
+
+	if !strings.Contains(output, "SOURCE") {
+		t.Errorf("expected SOURCE column header in transfer table, got:\n%s", output)
+	}
+	if !strings.Contains(output, "ocilab1") {
+		t.Errorf("expected source 'ocilab1' to appear in table, got:\n%s", output)
+	}
+}
+
+// TestPrintJobTable_NoSourceColumnWithoutTransfer verifies that for download-only
+// jobs (no transfer type), the SOURCE column is omitted from the table.
+func TestPrintJobTable_NoSourceColumnWithoutTransfer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	jobs := []daemon.Job{
+		{
+			ID:        "xyz789abc012",
+			Type:      daemon.JobTypeDownload,
+			RepoID:    "meta-llama/Llama-3.2-1B",
+			Format:    "gguf",
+			Target:    "node1",
+			Status:    daemon.JobDownloading,
+			CreatedAt: now,
+		},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printJobTable(jobs)
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	output := string(out)
+
+	if strings.Contains(output, "SOURCE") {
+		t.Errorf("expected no SOURCE column for download-only jobs, but found it in:\n%s", output)
+	}
+}

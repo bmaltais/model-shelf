@@ -809,3 +809,74 @@ func TestMeshUpgrade_ElapsedSecondsAlwaysPresent(t *testing.T) {
 		}
 	}
 }
+
+// TestRunMeshUpgrade_YesFlagSuppressesPrompt verifies that when --yes is set,
+// the "[y/N]" prompt token is not printed in human-readable (non-JSON) output.
+func TestRunMeshUpgrade_YesFlagSuppressesPrompt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := runSelfUpgradeFunc
+	t.Cleanup(func() { runSelfUpgradeFunc = orig })
+	runSelfUpgradeFunc = func(targetVersion, currentVersion string, yes, force bool, stdout, stderr io.Writer, promptReader io.Reader) error {
+		return nil
+	}
+
+	// Peer server that accepts upgrade and immediately reports new version.
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/upgrade" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		case r.URL.Path == "/v1/health":
+			json.NewEncoder(w).Encode(map[string]string{"version": "1.0.0"})
+		}
+	}))
+	defer peerSrv.Close()
+
+	peerPort := parsePort(t, peerSrv.URL)
+
+	nodes := []daemon.MeshNode{
+		{Name: "ctrl", Address: "127.0.0.1", Port: 8844, Roles: []string{"controller"}, Status: daemon.StatusOnline, Version: "0.9.0"},
+		{Name: "peer1", Address: "127.0.0.1", Port: peerPort, Roles: []string{"store"}, Status: daemon.StatusOnline, Version: "0.9.0"},
+	}
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			json.NewEncoder(w).Encode(nodes)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "ctrl",
+		Port:      parsePort(t, daemonSrv.URL),
+		Roles:     []string{"controller"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	// Capture stdout (human-readable; jsonOutput=false).
+	oldOut := os.Stdout
+	rp, wp, _ := os.Pipe()
+	os.Stdout = wp
+
+	// yes=true, jsonOutput=false — this is the combination that exposed the bug.
+	code := runMeshUpgrade(cfg, "1.0.0", true, false, false)
+
+	wp.Close()
+	os.Stdout = oldOut
+
+	var buf bytes.Buffer
+	buf.ReadFrom(rp)
+	output := buf.String()
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput: %s", code, output)
+	}
+
+	if strings.Contains(output, "[y/N]") {
+		t.Errorf("--yes flag set but output still contains [y/N] prompt:\n%s", output)
+	}
+}
