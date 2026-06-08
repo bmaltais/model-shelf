@@ -560,6 +560,7 @@ func (g *Gossip) fetchPeerJobs(node MeshNode) {
 		return
 	}
 	g.jobs.Merge(jobs)
+	g.jobs.ExpireStaleJobsForPeer(node.Name, jobs)
 }
 
 // fetchPeerInventory fetches the inventory from a peer node and caches it.
@@ -589,6 +590,18 @@ func (g *Gossip) fetchPeerInventory(node MeshNode) {
 	g.mu.Lock()
 	g.peerInventoryCache[node.Name] = entries
 	g.mu.Unlock()
+}
+
+// IsNodeOnline reports whether the named node is currently known to be online.
+func (g *Gossip) IsNodeOnline(name string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for _, n := range g.nodes {
+		if n.Name == name {
+			return n.Status == StatusOnline
+		}
+	}
+	return false
 }
 
 // PeerInventory returns the last cached inventory for the named peer node.

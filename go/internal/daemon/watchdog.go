@@ -15,6 +15,12 @@ const (
 	// truly stalled transfers (e.g. peer disconnected).
 	stallTimeout = 5 * time.Minute
 
+	// mergedJobStalledTimeout is how long a gossip-replicated (non-local) job
+	// can go without progress before being expired. 5 gossip cycles (75 s) is
+	// long enough to survive transient polling gaps while catching jobs that
+	// were abandoned when the target daemon restarted.
+	mergedJobStalledTimeout = 5 * pollInterval
+
 	// watchdogInterval is how often the watchdog checks for stalled jobs.
 	watchdogInterval = 30 * time.Second
 )
@@ -31,6 +37,7 @@ func (d *Daemon) startWatchdog(stop <-chan struct{}) {
 				return
 			case <-ticker.C:
 				d.reapStalledJobs()
+				d.reapStalledMergedJobs()
 			}
 		}
 	}()
@@ -44,6 +51,20 @@ func (d *Daemon) reapStalledJobs() {
 		log.Printf("watchdog: job %s stalled (no progress for %v), marking as failed", j.ID, stallTimeout)
 		d.cleanupPartialTransfer(j)
 		d.jobs.SetFailed(j.ID, "transfer stalled: no progress for "+stallTimeout.String())
+	}
+}
+
+// reapStalledMergedJobs expires non-local (gossip-replicated) jobs that have
+// had no progress for mergedJobStalledTimeout and whose target node is still
+// online. A target that is online but no longer reports the job means the job
+// was lost when the target daemon restarted.
+func (d *Daemon) reapStalledMergedJobs() {
+	stalled := d.jobs.StalledMergedJobs(mergedJobStalledTimeout)
+	for _, j := range stalled {
+		if d.gossip.IsNodeOnline(j.Target) {
+			log.Printf("watchdog: merged job %s stalled (target %s online, no progress for %v), marking as failed", j.ID, j.Target, mergedJobStalledTimeout)
+			d.jobs.SetFailed(j.ID, "transfer stalled: no progress for "+mergedJobStalledTimeout.String())
+		}
 	}
 }
 

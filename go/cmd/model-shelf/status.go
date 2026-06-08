@@ -98,6 +98,30 @@ func shouldDefaultMesh() bool {
 	return false
 }
 
+// findControllerAddr queries the local daemon's /v1/nodes endpoint and returns
+// the address:port of the first online controller node. Returns "" if none is
+// found or on any error.
+func findControllerAddr(daemonAddr string) string {
+	nodesURL := fmt.Sprintf("http://%s/v1/nodes", daemonAddr)
+	body, err := httpGet(nodesURL)
+	if err != nil {
+		return ""
+	}
+	var nodes []daemon.MeshNode
+	if err := json.Unmarshal(body, &nodes); err != nil {
+		return ""
+	}
+	for _, n := range nodes {
+		if n.Status != daemon.StatusOnline {
+			continue
+		}
+		if daemon.HasRole(n.Roles, "controller") {
+			return fmt.Sprintf("%s:%d", n.Address, n.Port)
+		}
+	}
+	return ""
+}
+
 func statusAllJobs(addr string, flags map[string]string) int {
 	// Determine whether to query mesh-wide.
 	// Explicit --local forces local-only; explicit --mesh forces mesh-wide.
@@ -114,6 +138,19 @@ func statusAllJobs(addr string, flags map[string]string) int {
 		useMesh = true
 	} else {
 		useMesh = shouldDefaultMesh()
+	}
+
+	// Non-controller nodes have an incomplete view of the mesh (they only see
+	// jobs that gossip has replicated to them). When mesh-wide status is
+	// requested, proxy to the controller so the caller always sees a complete
+	// picture, matching what the controller itself would return.
+	if useMesh {
+		localCfg, cfgErr := meshconfig.Load()
+		if cfgErr == nil && !isControllerNode(localCfg) {
+			if controllerAddr := findControllerAddr(addr); controllerAddr != "" {
+				addr = controllerAddr
+			}
+		}
 	}
 
 	jsonOutput := flags["json"] == "true"

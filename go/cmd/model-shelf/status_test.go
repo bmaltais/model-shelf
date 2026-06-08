@@ -803,3 +803,70 @@ func TestPrintJobTable_NoSourceColumnWithoutTransfer(t *testing.T) {
 		t.Errorf("expected no SOURCE column for download-only jobs, but found it in:\n%s", output)
 	}
 }
+
+// TestStatusMeshProxyToController verifies that a non-controller node running
+// `status --mesh` proxies the request to the controller node rather than
+// self-aggregating from its incomplete gossip-replicated view.
+func TestStatusMeshProxyToController(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	controllerJobs := []daemon.Job{
+		{
+			ID:        "controller-job-001",
+			RepoID:    "org/model",
+			Format:    "gguf",
+			Target:    "node1",
+			Status:    daemon.JobCompleted,
+			CreatedAt: now.Add(-5 * time.Minute),
+			DoneAt:    timePtr(now.Add(-1 * time.Minute)),
+		},
+	}
+
+	// Controller server — serves /v1/jobs?mesh=true with the authoritative job list.
+	var controllerHit atomic.Bool
+	controllerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mesh") == "true" {
+			controllerHit.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(controllerJobs)
+	}))
+	defer controllerServer.Close()
+
+	controllerU, _ := url.Parse(controllerServer.URL)
+	controllerPort, _ := strconv.Atoi(controllerU.Port())
+
+	// Local daemon — serves /v1/nodes listing the controller node, and /v1/jobs
+	// with an empty local list (simulating non-controller with incomplete view).
+	localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/nodes" {
+			nodes := []daemon.MeshNode{
+				{Name: "controller", Address: "127.0.0.1", Port: controllerPort, Roles: []string{"controller"}, Status: daemon.StatusOnline},
+			}
+			json.NewEncoder(w).Encode(nodes)
+			return
+		}
+		// Local jobs endpoint returns empty list.
+		json.NewEncoder(w).Encode([]daemon.Job{})
+	}))
+	defer localServer.Close()
+
+	// Write mesh config with store role only (non-controller).
+	localU, _ := url.Parse(localServer.URL)
+	localPort, _ := strconv.Atoi(localU.Port())
+	configDir := filepath.Join(home, ".model-shelf")
+	os.MkdirAll(configDir, 0o755)
+	config := fmt.Sprintf("name = \"store-1\"\nport = %d\nroles = [\"store\"]\nshelf_root = \"/tmp/shelf\"\n", localPort)
+	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644)
+
+	code := cmdStatus([]string{"--mesh"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !controllerHit.Load() {
+		t.Fatal("expected status --mesh to proxy the request to the controller node")
+	}
+}
