@@ -819,6 +819,43 @@ func TestCmdInventory_JSON_DaemonNotRunning(t *testing.T) {
 	}
 }
 
+// TestInventoryTableNoTruncationWithStaleNode verifies that when a node is stale
+// (its name has " (stale)" appended, widening the NODE column), the MODEL column
+// is not shrunk to the point where the quant suffix is cut off (#238).
+func TestInventoryTableNoTruncationWithStaleNode(t *testing.T) {
+	// Construct a row whose full model+quant string is long enough that the old
+	// column-shrink algorithm would sacrifice the quant suffix, but the fix
+	// ensures MODEL is never shrunk (other columns absorb the overflow instead).
+	rows := []InventoryRow{
+		{
+			Node:      "node1",
+			RepoID:    "BigOrg/VeryLongModelNameThatExceedsLimit-GGUF",
+			Quant:     "Q4_K_M",
+			Format:    "gguf",
+			SizeBytes: 746_000_000,
+			Stale:     true,
+		},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printInventoryTable(rows)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// Full quant suffix must appear intact — not cut to "Q4…" or "Q4_K…".
+	if !strings.Contains(output, "Q4_K_M") {
+		t.Errorf("quant suffix Q4_K_M should not be truncated; got:\n%s", output)
+	}
+}
+
 func TestSortInventoryRows(t *testing.T) {
 	rows := []InventoryRow{
 		{Node: "node2", Format: "mlx", RepoID: "b/model"},

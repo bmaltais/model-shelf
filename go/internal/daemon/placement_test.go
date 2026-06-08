@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -389,6 +390,54 @@ func TestSizeForGGUF(t *testing.T) {
 			t.Fatal("expected error for no match")
 		}
 	})
+}
+
+// TestSmartPlacementQuantNotFoundError verifies that when the requested quant is
+// absent from the repo, sizeForGGUF returns a *QuantNotFoundError that lists the
+// available quants — so the CLI can show a helpful message (#241).
+func TestSmartPlacementQuantNotFoundError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	siblings := []struct {
+		Filename string `json:"rfilename"`
+		Size     int64  `json:"size"`
+	}{
+		{"Qwen3-0.6B-Q4_0.gguf", 500_000_000},
+		{"Qwen3-0.6B-Q8_0.gguf", 900_000_000},
+		{"config.json", 1024},
+	}
+
+	_, err := sizeForGGUF(siblings, "Q4_K_M", "ggml-org/Qwen3-0.6B-GGUF")
+	if err == nil {
+		t.Fatal("expected error for absent quant")
+	}
+
+	var qErr *QuantNotFoundError
+	if !errors.As(err, &qErr) {
+		t.Fatalf("expected *QuantNotFoundError, got %T: %v", err, err)
+	}
+	if qErr.Quant != "Q4_K_M" {
+		t.Errorf("expected Quant=Q4_K_M, got %q", qErr.Quant)
+	}
+	if qErr.RepoID != "ggml-org/Qwen3-0.6B-GGUF" {
+		t.Errorf("expected correct RepoID, got %q", qErr.RepoID)
+	}
+	// Available list must include the quants that do exist.
+	joined := strings.Join(qErr.Available, ", ")
+	if !strings.Contains(joined, "Q4_0") {
+		t.Errorf("expected Q4_0 in available list, got: %q", joined)
+	}
+	if !strings.Contains(joined, "Q8_0") {
+		t.Errorf("expected Q8_0 in available list, got: %q", joined)
+	}
+	// Error message must be user-friendly — mention the quant and available options.
+	msg := err.Error()
+	if !strings.Contains(msg, "Q4_K_M") {
+		t.Errorf("error message must contain requested quant, got: %q", msg)
+	}
+	if !strings.Contains(msg, "Q4_0") || !strings.Contains(msg, "Q8_0") {
+		t.Errorf("error message must list available quants, got: %q", msg)
+	}
 }
 
 func TestQueryContentLength(t *testing.T) {

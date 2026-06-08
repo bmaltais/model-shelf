@@ -9,6 +9,19 @@ import (
 	"time"
 )
 
+// QuantNotFoundError is returned by sizeForGGUF when the requested quant does not
+// exist in the repository, carrying the list of available quants for a friendly message.
+type QuantNotFoundError struct {
+	RepoID    string
+	Quant     string
+	Available []string
+}
+
+func (e *QuantNotFoundError) Error() string {
+	return fmt.Sprintf("quant %s not found in %s; available: %s",
+		e.Quant, e.RepoID, strings.Join(e.Available, ", "))
+}
+
 // PlacementResult describes which Executor was selected and why.
 type PlacementResult struct {
 	Target string `json:"target"`
@@ -120,6 +133,19 @@ func sizeForGGUF(siblings []struct {
 	Size     int64  `json:"size"`
 }, quant, repoID string) (int64, error) {
 	quantUpper := strings.ToUpper(quant)
+	quantLower := strings.ToLower(quant)
+
+	// Collect all available quants from GGUF siblings for error reporting.
+	var available []string
+	for _, f := range siblings {
+		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
+			continue
+		}
+		if q := ExtractQuant(f.Filename); q != "" {
+			available = append(available, q)
+		}
+	}
+
 	for _, f := range siblings {
 		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
 			continue
@@ -134,7 +160,6 @@ func sizeForGGUF(siblings []struct {
 
 	// Fallback: search for first file that contains the quant string if no exact match.
 	// This handles cases where ExtractQuant might be too strict.
-	quantLower := strings.ToLower(quant)
 	for _, f := range siblings {
 		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
 			continue
@@ -147,7 +172,6 @@ func sizeForGGUF(siblings []struct {
 	}
 
 	// If no size from API or size is 0, fall back to HEAD request for the specific file.
-	// We need to guess the filename or find a matching sibling first.
 	var bestFile string
 	for _, f := range siblings {
 		if !strings.HasSuffix(strings.ToLower(f.Filename), ".gguf") {
@@ -167,7 +191,7 @@ func sizeForGGUF(siblings []struct {
 		}
 	}
 
-	return 0, fmt.Errorf("could not determine file size for %s (quant=%s) from HF API", repoID, quant)
+	return 0, &QuantNotFoundError{RepoID: repoID, Quant: quant, Available: available}
 }
 
 // sizeForSnapshot sums weight file sizes for mlx/safetensors formats.
@@ -231,13 +255,7 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 	// Exception: when ALL executors are CPU-only (no GPU detected), skip VRAM
 	// gating entirely and fall back to disk-space ranking. This handles home-lab
 	// meshes where nvidia-smi / sysctl report no GPU.
-	allCPUOnly := true
-	for _, n := range executors {
-		if n.GPU != nil && n.GPU.VRAMTotalGB > 0 {
-			allCPUOnly = false
-			break
-		}
-	}
+	allCPUOnly := AllExecutorsCPUOnly(nodes)
 
 	var candidates []struct {
 		Node       MeshNode
@@ -326,6 +344,23 @@ func SelectExecutor(nodes []MeshNode, estimatedVRAMGB float64, repoID, format, q
 		Target: best.Node.Name,
 		Reason: reason,
 	}, nil
+}
+
+// AllExecutorsCPUOnly reports whether every online executor node in the mesh has
+// no GPU, so callers can skip VRAM estimation for CPU-only meshes.
+func AllExecutorsCPUOnly(nodes []MeshNode) bool {
+	for _, n := range nodes {
+		if n.Status == StatusOffline {
+			continue
+		}
+		if !HasRole(n.Roles, "executor") {
+			continue
+		}
+		if n.GPU != nil && n.GPU.VRAMTotalGB > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // HasRole checks if a node has a specific role.
