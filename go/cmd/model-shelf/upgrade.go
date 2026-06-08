@@ -185,7 +185,7 @@ func runMeshUpgrade(cfg *meshconfig.Config, targetVersion string, yes, force, js
 		}
 		fmt.Fprintln(stdout)
 
-		if len(needsUpgrade) > 0 {
+		if !yes && len(needsUpgrade) > 0 {
 			fmt.Fprintf(stdout, "Upgrade %d node(s) to v%s? [y/N] ", len(needsUpgrade), target)
 		}
 	}
