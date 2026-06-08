@@ -295,6 +295,11 @@ func printInventoryTable(rows []InventoryRow) {
 	for _, w := range widths {
 		totalContent += w
 	}
+	// Shrink non-MODEL columns until the table fits. If all non-MODEL columns
+	// hit their floor (≤ 3 chars) before the total fits, the loop exits and the
+	// output intentionally overflows termWidth — MODEL readability takes priority.
+	// On very narrow terminals (< ~60 cols) this means lines wrap; that is
+	// acceptable given that quant suffixes are the primary diagnostic signal.
 	for totalContent+totalGaps > termWidth {
 		maxIdx := -1
 		for i := 0; i < len(widths); i++ {

@@ -344,6 +344,9 @@ func autoSelectTarget(repoID, format, quant string) (*daemon.PlacementResult, er
 	if !daemon.AllExecutorsCPUOnly(nodes) {
 		estimatedVRAMGB, err = daemon.EstimateModelVRAM(repoID, format, quant)
 		if err != nil {
+			if _, ok := err.(*daemon.QuantNotFoundError); ok {
+				return nil, err // friendly message already; no wrapper needed
+			}
 			return nil, fmt.Errorf("estimating model VRAM: %v", err)
 		}
 	}
@@ -392,4 +395,3 @@ func fetchJobs(cfg *meshconfig.Config) ([]daemon.Job, error) {
 	}
 	return jobs, nil
 }
-
