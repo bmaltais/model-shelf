@@ -117,32 +117,38 @@ func WriteTo(path string, cfg *Config) error {
 	return enc.Encode(cfg)
 }
 
-// GenerateMeshKey creates a random 32-byte hex mesh key and writes it to disk.
+// GenerateMeshKey creates a random 32-byte hex mesh key and writes it to the default path.
 func GenerateMeshKey() (string, error) {
+	return GenerateMeshKeyAt(MeshKeyPath())
+}
+
+// GenerateMeshKeyAt creates a random 32-byte hex mesh key and writes it to path.
+func GenerateMeshKeyAt(path string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	key := hex.EncodeToString(b)
-	keyPath := MeshKeyPath()
-	dir := filepath.Dir(keyPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(keyPath, []byte(key+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(key+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	return key, nil
 }
 
-// WriteMeshKey writes a known mesh key to disk (used when joining a mesh).
+// WriteMeshKey writes a known mesh key to the default path (used when joining a mesh).
 func WriteMeshKey(key string) error {
-	keyPath := MeshKeyPath()
-	dir := filepath.Dir(keyPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	return WriteMeshKeyAt(MeshKeyPath(), key)
+}
+
+// WriteMeshKeyAt writes a known mesh key to path.
+func WriteMeshKeyAt(path string, key string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(keyPath, []byte(key+"\n"), 0o600)
+	return os.WriteFile(path, []byte(key+"\n"), 0o600)
 }
 
 // GetHostname returns the system hostname (used as default node name).

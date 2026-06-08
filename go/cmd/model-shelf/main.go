@@ -132,6 +132,7 @@ Init flags:
   --name <name>      Node name (default: hostname)
   --seed <addrs>     Comma-separated seed peer addresses (e.g. host1:8844,host2:8844)
   --key <mesh-key>   Mesh key (written to mesh.key)
+  --config <path>    Override config file path (default: ~/.model-shelf/config.toml)
   --force            Overwrite existing config
 
 Service actions:
@@ -599,7 +600,7 @@ func cmdInit(args []string) int {
 	_, flags := parseFlags(args)
 
 	if flags["help"] == "true" {
-		fmt.Println("Usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--seed <addrs>] [--key <mesh-key>] [--force]")
+		fmt.Println("Usage: model-shelf init --role <roles> --shelf <path> [--name <name>] [--seed <addrs>] [--key <mesh-key>] [--config <path>] [--force]")
 		fmt.Println()
 		fmt.Println("Initialize a mesh node.")
 		fmt.Println()
@@ -609,9 +610,18 @@ func cmdInit(args []string) int {
 		fmt.Println("  --name <name>      Node name (default: hostname)")
 		fmt.Println("  --seed <addrs>     Comma-separated seed peer addresses (e.g. host1:8844,host2:8844)")
 		fmt.Println("  --key <mesh-key>   Mesh key (written to mesh.key)")
+		fmt.Println("  --config <path>    Override config file path (default: ~/.model-shelf/config.toml)")
 		fmt.Println("  --force            Overwrite existing config")
 		return 0
 	}
+
+	// Resolve config and key paths. --config overrides the default location;
+	// mesh.key always lives alongside config.toml in the same directory.
+	configPath := flags["config"]
+	if configPath == "" {
+		configPath = meshconfig.ConfigPath()
+	}
+	keyPath := filepath.Join(filepath.Dir(configPath), "mesh.key")
 
 	// --shelf is required.
 	shelfPath := flags["shelf"]
@@ -661,8 +671,10 @@ func cmdInit(args []string) int {
 
 	// Check if config already exists (unless --force).
 	force := flags["force"] == "true"
-	if meshconfig.Exists() && !force {
-		fmt.Fprintf(os.Stderr, "error: %s already exists (use --force to overwrite)\n", meshconfig.ConfigPath())
+	_, statErr := os.Stat(configPath)
+	configExists := statErr == nil
+	if configExists && !force {
+		fmt.Fprintf(os.Stderr, "error: %s already exists (use --force to overwrite)\n", configPath)
 		return 1
 	}
 
@@ -674,8 +686,8 @@ func cmdInit(args []string) int {
 
 	// If force-overwriting and the name is changing, broadcast a leave event
 	// for the old identity to prevent phantom nodes in the mesh.
-	if force && meshconfig.Exists() {
-		if oldCfg, err := meshconfig.Load(); err == nil && oldCfg.Name != name {
+	if force {
+		if oldCfg, err := meshconfig.LoadFrom(configPath); err == nil && oldCfg.Name != name {
 			broadcastLeaveForOldNode(oldCfg)
 		}
 	}
@@ -707,18 +719,17 @@ func cmdInit(args []string) int {
 		ShelfRoot: absShelf,
 		Seeds:     seeds,
 	}
-	if err := meshconfig.Write(meshCfg); err != nil {
+	if err := meshconfig.WriteTo(configPath, meshCfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
 		return 1
 	}
-	fmt.Printf("model-shelf: wrote %s\n", meshconfig.ConfigPath())
+	fmt.Printf("model-shelf: wrote %s\n", configPath)
 
 	// Mesh key handling:
 	// 1. If --key provided, use that.
 	// 2. If key already exists on disk, preserve it.
 	// 3. If controller role, generate a new key.
 	// 4. Otherwise, no key.
-	keyPath := meshconfig.MeshKeyPath()
 
 	// Read existing key (if any) before any modifications so we can detect key changes.
 	var existingKey string
@@ -730,7 +741,7 @@ func cmdInit(args []string) int {
 		if force && existingKey != "" && existingKey != flagKey {
 			warnKeyChangePeers(name, "replacing the mesh key")
 		}
-		if err := meshconfig.WriteMeshKey(flagKey); err != nil {
+		if err := meshconfig.WriteMeshKeyAt(keyPath, flagKey); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing mesh key: %v\n", err)
 			return 1
 		}
@@ -742,7 +753,7 @@ func cmdInit(args []string) int {
 		if force {
 			warnKeyChangePeers(name, "generating a new mesh key")
 		}
-		key, err := meshconfig.GenerateMeshKey()
+		key, err := meshconfig.GenerateMeshKeyAt(keyPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error generating mesh key: %v\n", err)
 			return 1

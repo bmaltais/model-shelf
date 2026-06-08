@@ -643,6 +643,57 @@ func TestCmdInit_ForceNewKeyWarnsPeers(t *testing.T) {
 	}
 }
 
+func TestInitCustomConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shelfPath := filepath.Join(t.TempDir(), "models")
+	customDir := filepath.Join(t.TempDir(), "custom-mesh")
+	customConfig := filepath.Join(customDir, "config.toml")
+
+	code := cmdInit([]string{
+		"--role", "controller",
+		"--shelf", shelfPath,
+		"--name", "testnode",
+		"--config", customConfig,
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	// Config must exist at the custom path.
+	if _, err := os.Stat(customConfig); err != nil {
+		t.Fatalf("config not written to custom path %s: %v", customConfig, err)
+	}
+
+	// Default path must be untouched.
+	defaultConfig := filepath.Join(home, ".model-shelf", "config.toml")
+	if _, err := os.Stat(defaultConfig); err == nil {
+		t.Errorf("default config %s should not exist when --config is provided", defaultConfig)
+	}
+
+	// Config contents must be valid and contain expected values.
+	cfg, err := meshconfig.LoadFrom(customConfig)
+	if err != nil {
+		t.Fatalf("failed to load config from custom path: %v", err)
+	}
+	if cfg.Name != "testnode" {
+		t.Errorf("expected name 'testnode', got %q", cfg.Name)
+	}
+	if cfg.ShelfRoot != shelfPath {
+		t.Errorf("expected shelf_root %q, got %q", shelfPath, cfg.ShelfRoot)
+	}
+
+	// Mesh key must be written alongside the custom config, not in default dir.
+	customKeyPath := filepath.Join(customDir, "mesh.key")
+	if _, err := os.Stat(customKeyPath); err != nil {
+		t.Errorf("mesh.key not found alongside custom config at %s: %v", customKeyPath, err)
+	}
+	defaultKeyPath := filepath.Join(home, ".model-shelf", "mesh.key")
+	if _, err := os.Stat(defaultKeyPath); err == nil {
+		t.Errorf("default mesh.key %s should not exist when --config is provided", defaultKeyPath)
+	}
+}
+
 func TestCmdInit_ForceNewKeyNoPeersNoWarn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
