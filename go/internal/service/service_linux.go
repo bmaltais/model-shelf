@@ -39,6 +39,10 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart="%s" daemon
+# Restart=always lets the daemon recover after an API-triggered upgrade
+# (os.Exit(0)) as well as unexpected crashes. systemctl stop still works:
+# systemd suppresses restarts for administrative stops even with Restart=always.
+# RestartSec=2 gives the new binary time to appear before systemd starts it.
 Restart=always
 RestartSec=2
 

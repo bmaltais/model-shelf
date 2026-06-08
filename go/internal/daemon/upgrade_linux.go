@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"log"
 	"os"
 )
 
@@ -21,5 +22,6 @@ func init() {
 // cgroup when the main process exits, including that shell, so the
 // `systemctl start` command never ran.
 func defaultDaemonRestart() {
+	log.Printf("model-shelf daemon: exiting for systemd-managed restart (Restart=always)")
 	os.Exit(0)
 }
