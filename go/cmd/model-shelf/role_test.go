@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,6 +226,127 @@ func TestCmdRole_NoArgs(t *testing.T) {
 	code := cmdRole([]string{})
 	if code != 0 {
 		t.Fatalf("expected exit 0 for no-arg help display, got %d", code)
+	}
+}
+
+func TestRoleSetJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdRole([]string{"set", "controller,executor", "--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	var got struct {
+		Roles []string `json:"roles"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, buf.String())
+	}
+	roleSet := map[string]bool{}
+	for _, r := range got.Roles {
+		roleSet[r] = true
+	}
+	if !roleSet["controller"] || !roleSet["executor"] {
+		t.Errorf("expected roles [controller, executor], got %v", got.Roles)
+	}
+}
+
+func TestRoleAddJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdRole([]string{"add", "executor", "--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	out, _ := io.ReadAll(r)
+	var got struct {
+		Roles []string `json:"roles"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, out)
+	}
+	roleSet := map[string]bool{}
+	for _, r := range got.Roles {
+		roleSet[r] = true
+	}
+	if !roleSet["store"] || !roleSet["executor"] {
+		t.Errorf("expected roles [store, executor], got %v", got.Roles)
+	}
+}
+
+func TestRoleRemoveJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store", "executor"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	meshconfig.WriteTo(meshconfig.ConfigPath(), cfg)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdRole([]string{"remove", "executor", "--json"})
+
+	w.Close()
+	os.Stdout = old
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	out, _ := io.ReadAll(r)
+	var got struct {
+		Roles []string `json:"roles"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("invalid JSON output: %v\nraw: %s", err, out)
+	}
+	if len(got.Roles) != 1 || got.Roles[0] != "store" {
+		t.Errorf("expected roles [store], got %v", got.Roles)
 	}
 }
 

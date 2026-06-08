@@ -19,6 +19,47 @@ import (
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 )
 
+// TestResolveJSONMissingQuant verifies that when --json is set and a resolver
+// validation error occurs (missing --quant for gguf), the error is emitted as
+// JSON on stdout rather than as plain text on stderr (#235).
+func TestResolveJSONMissingQuant(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	shelfRoot := filepath.Join(home, "shelf")
+	os.MkdirAll(filepath.Join(shelfRoot, "gguf"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "mlx"), 0o755)
+	os.MkdirAll(filepath.Join(shelfRoot, "safetensors"), 0o755)
+
+	cfgDir := filepath.Join(home, ".config", "model-shelf")
+	os.MkdirAll(cfgDir, 0o755)
+	cfgContent := "shelf_root = \"" + shelfRoot + "\"\nallow_downloads = false\n"
+	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// GGUF model without --quant triggers a resolver validation error.
+	code := cmdResolve([]string{"unsloth/Qwen3-0.6B-GGUF", "--json", "--no-download"})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d", code)
+	}
+
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output on stdout, got: %s", out)
+	}
+	if !strings.Contains(errResp["error"], "quant") {
+		t.Errorf("expected 'quant' in error field, got: %v", errResp)
+	}
+}
+
 func TestCmdResolve_QuantWarningForMLX(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

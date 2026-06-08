@@ -436,21 +436,27 @@ func TestCmdList_NonExistentShelfRoot_Errors_JSON(t *testing.T) {
 	cfgContent := "shelf_root = \"/nonexistent/path/that/does/not/exist\"\nallow_downloads = false\n"
 	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0o644)
 
-	oldStderr := os.Stderr
-	re, we, _ := os.Pipe()
-	os.Stderr = we
+	// With --json, errors go to stdout as JSON (#235).
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
 
 	code := cmdList([]string{"--json"})
 
-	we.Close()
-	os.Stderr = oldStderr
-	errOut, _ := io.ReadAll(re)
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
 
 	if code != 1 {
 		t.Fatalf("expected exit 1 when shelf_root doesn't exist, got %d", code)
 	}
-	if !strings.Contains(string(errOut), "doesn't exist") {
-		t.Errorf("expected error about missing shelf, got stderr: %q", errOut)
+
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output on stdout, got: %s", out)
+	}
+	if !strings.Contains(errResp["error"], "doesn't exist") {
+		t.Errorf("expected error about missing shelf, got: %v", errResp)
 	}
 }
 
@@ -508,5 +514,34 @@ func TestCmdList_ConfigIsolatesShelfLookup(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].RepoID != "publisher/model-A-GGUF" {
 		t.Errorf("expected only model-A from alt-shelf, got: %s", out)
+	}
+}
+
+func TestListJSONBadConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	missingCfg := filepath.Join(t.TempDir(), "nonexistent", "config.toml")
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	code := cmdList([]string{"--json", "--config", missingCfg})
+
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d", code)
+	}
+
+	var errResp map[string]string
+	if err := json.Unmarshal(out, &errResp); err != nil {
+		t.Fatalf("expected JSON error output, got: %s", out)
+	}
+	if errResp["error"] == "" {
+		t.Errorf("expected non-empty 'error' field, got: %v", errResp)
 	}
 }

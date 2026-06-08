@@ -590,6 +590,86 @@ func TestCmdInventory_Empty(t *testing.T) {
 	}
 }
 
+// TestInventoryJSONOfflineNodeWarningOnStderr verifies that when --json is active
+// and a node is unreachable, the warning goes to stderr (not stdout) so that
+// the JSON array on stdout remains parseable (#233).
+func TestInventoryJSONOfflineNodeWarningOnStderr(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	now := time.Now()
+	nodes := []daemon.MeshNode{
+		{Name: "mini1", Address: "10.99.99.99", Port: 9999, Roles: []string{"store"}, Status: daemon.StatusOffline},
+	}
+
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/nodes":
+			json.NewEncoder(w).Encode(nodes)
+		case "/v1/peer-inventory":
+			json.NewEncoder(w).Encode([]daemon.InventoryEntry{
+				{RepoID: "org/model", Format: "gguf", Quant: "Q4_K_M", SizeBytes: 100, LastAccessed: now},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	daemonPort := strings.TrimPrefix(daemonServer.URL, "http://127.0.0.1:")
+	cfg := &meshconfig.Config{
+		Name:      "self",
+		Port:      mustAtoi(t, daemonPort),
+		Roles:     []string{"store"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+
+	oldOut := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	oldErr := os.Stderr
+	rErr, wErr, _ := os.Pipe()
+	os.Stderr = wErr
+
+	code := cmdInventory([]string{"--json"})
+
+	wOut.Close()
+	os.Stdout = oldOut
+	wErr.Close()
+	os.Stderr = oldErr
+
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+
+	var bufOut bytes.Buffer
+	bufOut.ReadFrom(rOut)
+	stdout := bufOut.String()
+
+	var bufErr bytes.Buffer
+	bufErr.ReadFrom(rErr)
+	stderr := bufErr.String()
+
+	// stdout must be valid JSON.
+	var rows []InventoryRow
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("stdout must be valid JSON, got: %q\nerr: %v", stdout, err)
+	}
+
+	// Warning must be on stderr, not stdout.
+	if !strings.Contains(stderr, "warning:") {
+		t.Errorf("expected warning on stderr for unreachable node, got: %q", stderr)
+	}
+	if strings.Contains(stdout, "warning:") {
+		t.Errorf("warning must not appear on stdout when --json is active, got: %q", stdout)
+	}
+}
+
 func TestCmdInventory_NoConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	code := cmdInventory([]string{})
