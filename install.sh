@@ -69,6 +69,14 @@ chmod +x "${TARGET}"
 VERSION=$("${TARGET}" version 2>/dev/null) && echo "Installed: $VERSION" \
   || echo "warning: installed binary but could not verify (may need different platform)" >&2
 
+# Restart the daemon service if it is already running, so the new binary takes effect.
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl --user is-active model-shelf >/dev/null 2>&1; then
+    systemctl --user restart model-shelf
+    echo "Daemon service restarted."
+  fi
+fi
+
 # Ensure PATH includes INSTALL_DIR for non-interactive sessions (e.g. SSH).
 # We append to ~/.profile which is sourced by login shells (including non-interactive SSH).
 PATH_LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""

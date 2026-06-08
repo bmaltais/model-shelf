@@ -86,6 +86,38 @@ func TestHandleUpgrade_InvalidBody(t *testing.T) {
 	}
 }
 
+// TestDaemonUpgradeEndpointForce verifies that POST /v1/upgrade with force:true
+// proceeds to download even when the daemon is already at the requested version.
+func TestDaemonUpgradeEndpointForce(t *testing.T) {
+	stubFetchChecksums(t, currentPlatformChecksums(fakeSHA), nil)
+	stubDaemonUpgrade(t, nil)
+	restartCalled := stubDaemonRestart(t)
+	stubServiceRefreshUnit(t, nil)
+
+	d := newUpgradeDaemon("0.6.0", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/upgrade", strings.NewReader(`{"version": "0.6.0", "force": true}`))
+	w := httptest.NewRecorder()
+	d.handleUpgrade(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 with force=true, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp upgradeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.Status != "accepted" {
+		t.Errorf("expected accepted with force=true, got %q", resp.Status)
+	}
+
+	select {
+	case <-restartCalled:
+		// restart triggered as expected after force upgrade
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemonRestart was not called within 2s after force upgrade")
+	}
+}
+
 func TestHandleUpgrade_AlreadyCurrent(t *testing.T) {
 	d := newUpgradeDaemon("0.6.0", "")
 	req := httptest.NewRequest(http.MethodPost, "/v1/upgrade", strings.NewReader(`{"version": "0.6.0"}`))
