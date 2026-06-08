@@ -338,10 +338,14 @@ func autoSelectTarget(repoID, format, quant string) (*daemon.PlacementResult, er
 		}
 	}
 
-	// Estimate VRAM requirement from HF API.
-	estimatedVRAMGB, err := daemon.EstimateModelVRAM(repoID, format, quant)
-	if err != nil {
-		return nil, fmt.Errorf("estimating model VRAM: %v", err)
+	// Skip VRAM estimation when all executor nodes are CPU-only — the HF API call
+	// is unnecessary and would fail spuriously when the quant doesn't exist on HF.
+	var estimatedVRAMGB float64
+	if !daemon.AllExecutorsCPUOnly(nodes) {
+		estimatedVRAMGB, err = daemon.EstimateModelVRAM(repoID, format, quant)
+		if err != nil {
+			return nil, fmt.Errorf("estimating model VRAM: %v", err)
+		}
 	}
 
 	// Build per-node inventory map.
@@ -388,3 +392,4 @@ func fetchJobs(cfg *meshconfig.Config) ([]daemon.Job, error) {
 	}
 	return jobs, nil
 }
+

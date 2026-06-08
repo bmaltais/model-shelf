@@ -234,6 +234,14 @@ func printInventoryTable(rows []InventoryRow) {
 		termWidth = w
 	}
 
+	// Column layout constants — modelColumnIdx ties the protection logic to the
+	// headers slice order so reordering headers stays visible in one place.
+	const (
+		gapWidth       = 2
+		modelColumnIdx = 1  // index of "MODEL" in headers
+		minModelWidth  = 50 // fits most repo:quant strings (typical 20-45 chars)
+	)
+
 	// Column headers.
 	headers := []string{"NODE", "MODEL", "FORMAT", "SIZE"}
 	widths := make([]int, len(headers))
@@ -268,8 +276,8 @@ func printInventoryTable(rows []InventoryRow) {
 		if len(tRows[i].node) > widths[0] {
 			widths[0] = len(tRows[i].node)
 		}
-		if len(tRows[i].model) > widths[1] {
-			widths[1] = len(tRows[i].model)
+		if len(tRows[i].model) > widths[modelColumnIdx] {
+			widths[modelColumnIdx] = len(tRows[i].model)
 		}
 		if len(tRows[i].format) > widths[2] {
 			widths[2] = len(tRows[i].format)
@@ -278,22 +286,29 @@ func printInventoryTable(rows []InventoryRow) {
 			widths[3] = len(tRows[i].size)
 		}
 	}
+	if widths[modelColumnIdx] < minModelWidth {
+		widths[modelColumnIdx] = minModelWidth
+	}
 
-	// Truncate columns to fit terminal width.
-	const gapWidth = 2
 	totalGaps := (len(headers) - 1) * gapWidth
 	totalContent := 0
 	for _, w := range widths {
 		totalContent += w
 	}
 	for totalContent+totalGaps > termWidth {
-		maxIdx := 0
-		for i := 1; i < len(widths); i++ {
-			if widths[i] > widths[maxIdx] {
+		maxIdx := -1
+		for i := 0; i < len(widths); i++ {
+			if i == modelColumnIdx {
+				continue // MODEL is protected
+			}
+			if widths[i] <= 3 {
+				continue
+			}
+			if maxIdx == -1 || widths[i] > widths[maxIdx] {
 				maxIdx = i
 			}
 		}
-		if widths[maxIdx] <= 3 {
+		if maxIdx == -1 {
 			break
 		}
 		widths[maxIdx]--
@@ -302,10 +317,10 @@ func printInventoryTable(rows []InventoryRow) {
 
 	// Print header (truncate headers to column width for narrow terminals).
 	fmtStr := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds\n",
-		widths[0], widths[1], widths[2], widths[3])
+		widths[0], widths[modelColumnIdx], widths[2], widths[3])
 	fmt.Printf(fmtStr,
 		truncate(headers[0], widths[0]),
-		truncate(headers[1], widths[1]),
+		truncate(headers[modelColumnIdx], widths[modelColumnIdx]),
 		truncate(headers[2], widths[2]),
 		truncate(headers[3], widths[3]))
 
@@ -313,7 +328,7 @@ func printInventoryTable(rows []InventoryRow) {
 	for _, r := range tRows {
 		fmt.Printf(fmtStr,
 			truncate(r.node, widths[0]),
-			truncate(r.model, widths[1]),
+			truncate(r.model, widths[modelColumnIdx]),
 			truncate(r.format, widths[2]),
 			truncate(r.size, widths[3]),
 		)

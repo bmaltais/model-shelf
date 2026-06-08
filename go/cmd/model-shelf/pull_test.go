@@ -12,8 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexziskind1/model-shelf/internal/daemon"
+	"github.com/alexziskind1/model-shelf/internal/meshconfig"
 	"github.com/alexziskind1/model-shelf/internal/resolver"
 )
 
@@ -525,6 +527,70 @@ func TestCmdPull_AlreadyPresentLocally_JSON(t *testing.T) {
 	}
 	if resp.Target != "local-node" {
 		t.Errorf("expected target 'local-node', got %q", resp.Target)
+	}
+}
+
+// TestSmartPlacementSkipsVRAMOnCPUOnlyMesh verifies that autoSelectTarget does not
+// call EstimateModelVRAM (HF API) when all executor nodes are CPU-only (#241).
+// The test forces HF_TOKEN to an invalid value so that any real HF API call would
+// fail with 401 — if the skip is in place the call never happens and the test passes.
+func TestSmartPlacementSkipsVRAMOnCPUOnlyMesh(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Invalid token guarantees HF API returns 401 if contacted.
+	t.Setenv("HF_TOKEN", "invalid-token-for-test")
+	t.Setenv("HUGGING_FACE_HUB_TOKEN", "")
+
+	now := time.Now()
+	nodes := []daemon.MeshNode{
+		{Name: "cpu-exec", Address: "REPLACE", Port: 0, Roles: []string{"executor"}, Status: daemon.StatusOnline, GPU: nil, LastSeen: &now},
+	}
+
+	// Node server for inventory queries.
+	nodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/inventory" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]daemon.InventoryEntry{})
+		}
+	}))
+	defer nodeServer.Close()
+
+	nodeAddr, nodePort := parseTestServerAddr(t, nodeServer.URL)
+	nodes[0].Address = nodeAddr
+	nodes[0].Port = nodePort
+
+	// Mock local daemon serving /v1/nodes and /v1/jobs.
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/nodes":
+			json.NewEncoder(w).Encode(nodes)
+		case "/v1/jobs":
+			json.NewEncoder(w).Encode([]daemon.Job{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	daemonPort := strings.TrimPrefix(daemonServer.URL, "http://127.0.0.1:")
+	cfg := &meshconfig.Config{
+		Name:      "cpu-exec",
+		Port:      mustAtoi(t, daemonPort),
+		Roles:     []string{"executor"},
+		ShelfRoot: filepath.Join(home, "shelf"),
+	}
+	if err := meshconfig.WriteTo(meshconfig.ConfigPath(), cfg); err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+
+	// Should succeed without hitting HF API — CPU-only mesh skips VRAM estimation.
+	result, err := autoSelectTarget("ggml-org/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M")
+	if err != nil {
+		t.Fatalf("expected success on CPU-only mesh (HF API must not be called), got: %v", err)
+	}
+	if result.Target != "cpu-exec" {
+		t.Errorf("expected cpu-exec, got %s", result.Target)
 	}
 }
 
