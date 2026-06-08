@@ -898,3 +898,29 @@ func parseTestServerAddr(t *testing.T, url string) (string, int) {
 	}
 	return parts[0], port
 }
+
+// TestInventoryTableFormatColumnFitsSafetensors verifies that the FORMAT column
+// is wide enough to display "safetensors" (11 chars) without truncation (#258).
+func TestInventoryTableFormatColumnFitsSafetensors(t *testing.T) {
+	rows := []InventoryRow{
+		{Node: "ocilab1", RepoID: "Qwen/Qwen3-0.6B", Format: "safetensors", SizeBytes: 1400000000},
+	}
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	printInventoryTable(rows)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	// "safetensors" must appear in full, not truncated.
+	if !strings.Contains(output, "safetensors") {
+		t.Errorf("FORMAT column truncated 'safetensors'; output:\n%s", output)
+	}
+}

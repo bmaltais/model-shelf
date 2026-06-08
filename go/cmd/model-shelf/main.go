@@ -949,6 +949,29 @@ type ShelfEntry struct {
 	ShelfRoot string `json:"shelf_root"`
 }
 
+// MarshalJSON ensures "quant" is always emitted (null when empty).
+func (e ShelfEntry) MarshalJSON() ([]byte, error) {
+	type Alias ShelfEntry
+	if e.Quant == "" {
+		return json.Marshal(struct {
+			RepoID    string `json:"repo_id"`
+			Format    string `json:"format"`
+			Quant     *string `json:"quant"`
+			SizeBytes int64  `json:"size_bytes"`
+			Path      string `json:"path"`
+			ShelfRoot string `json:"shelf_root"`
+		}{
+			RepoID:    e.RepoID,
+			Format:    e.Format,
+			Quant:     nil,
+			SizeBytes: e.SizeBytes,
+			Path:      e.Path,
+			ShelfRoot: e.ShelfRoot,
+		})
+	}
+	return json.Marshal(Alias(e))
+}
+
 func cmdList(args []string) int {
 	_, flags := parseFlags(args)
 
