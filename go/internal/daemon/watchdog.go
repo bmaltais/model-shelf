@@ -70,6 +70,9 @@ func (d *Daemon) reapStalledMergedJobs() {
 
 // cleanupPartialTransfer removes .partial files or staging directories left
 // behind by a failed transfer.
+// For GGUF, large partials (>= resumeThresholdBytes) are left on disk so that
+// a subsequent pull can resume from offset (see ggufPartialOffset + transferGGUF).
+// Small partials are still cleaned (not worth the resume RTT per design).
 func (d *Daemon) cleanupPartialTransfer(j Job) {
 	if j.Format == "gguf" {
 		destPath, err := resolver.ShelfPathGGUF(d.cfg.ShelfRoot, j.RepoID, j.Quant)
@@ -77,11 +80,15 @@ func (d *Daemon) cleanupPartialTransfer(j Job) {
 			return
 		}
 		partial := destPath + resolver.PartialSuffix
-		if _, statErr := os.Stat(partial); statErr == nil {
-			if err := os.Remove(partial); err != nil {
-				log.Printf("watchdog: failed to remove partial file %s: %v", partial, err)
+		if info, statErr := os.Stat(partial); statErr == nil {
+			if info.Size() >= resumeThresholdBytes {
+				log.Printf("watchdog: leaving large GGUF partial %s (%d bytes) for potential resume", partial, info.Size())
 			} else {
-				log.Printf("watchdog: cleaned up partial file %s", partial)
+				if err := os.Remove(partial); err != nil {
+					log.Printf("watchdog: failed to remove partial file %s: %v", partial, err)
+				} else {
+					log.Printf("watchdog: cleaned up partial file %s", partial)
+				}
 			}
 		}
 	} else {

@@ -23,14 +23,16 @@ import (
 
 // Daemon holds the running daemon state.
 type Daemon struct {
-	cfg       *meshconfig.Config
-	startTime time.Time
-	server    *http.Server
-	gossip    *Gossip
-	inventory *Inventory
-	jobs      *JobStore
-	gpu       *GPUInfo
-	evictMu   sync.Mutex // serializes eviction cascades to prevent double-counting freed space
+	cfg         *meshconfig.Config
+	startTime   time.Time
+	server      *http.Server
+	gossip      *Gossip
+	inventory   *Inventory
+	jobs        *JobStore
+	gpu         *GPUInfo
+	evictMu     sync.Mutex // serializes eviction cascades to prevent double-counting freed space
+	shutdownCtx context.Context
+	transfers   sync.WaitGroup // tracks in-flight executePull goroutines
 }
 
 // HealthResponse is returned by GET /v1/health.
@@ -172,6 +174,7 @@ func (d *Daemon) Run() error {
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	d.shutdownCtx = ctx
 
 	// Start gossip background poller.
 	d.gossip.StartPoller(ctx)
@@ -194,6 +197,11 @@ func (d *Daemon) Run() error {
 	log.Printf("model-shelf daemon: listening on %s (node: %s, roles: %v)", addr, d.cfg.Name, d.cfg.Roles)
 	err = d.server.Serve(ln)
 	if err == http.ErrServerClosed {
+		// Wait for in-flight transfers to finish cleanup before exiting.
+		// Must block in the main goroutine *after* Serve unblocks so the
+		// process does not terminate while transfer goroutines are still
+		// doing atomic renames of .partial or removing on non-cancel errors.
+		d.transfers.Wait()
 		return nil
 	}
 	return err

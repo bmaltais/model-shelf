@@ -3,6 +3,7 @@ package daemon
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -396,7 +397,7 @@ func TestPeerTransfer_GGUF(t *testing.T) {
 	// Create a job and perform the transfer.
 	job := destD.jobs.Create("Qwen/TestModel-GGUF", "gguf", "Q4_K_M", "dest-node")
 	peer := &peerSource{Name: "source-node", Address: sourceHost, Port: sourcePort}
-	err := destD.transferFromPeer(job.ID, peer, "Qwen/TestModel-GGUF", "gguf", "Q4_K_M")
+	err := destD.transferFromPeer(context.Background(), job.ID, peer, "Qwen/TestModel-GGUF", "gguf", "Q4_K_M")
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
@@ -468,7 +469,7 @@ func TestPeerTransfer_MLX(t *testing.T) {
 	// Create a job and perform the transfer.
 	job := destD.jobs.Create("mlx-community/TestModel", "mlx", "", "dest-node")
 	peer := &peerSource{Name: "source-node", Address: sourceHost, Port: sourcePort}
-	err := destD.transferFromPeer(job.ID, peer, "mlx-community/TestModel", "mlx", "")
+	err := destD.transferFromPeer(context.Background(), job.ID, peer, "mlx-community/TestModel", "mlx", "")
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
@@ -564,7 +565,7 @@ func TestExecutePull_PrefersPeerTransfer(t *testing.T) {
 
 	// Execute pull — should transfer from peer, not HF.
 	job := destD.jobs.Create("testorg/testmodel", "mlx", "", "dest-node")
-	destD.executePull(job.ID, "testorg/testmodel", "mlx", "", false, "auto")
+	destD.executePull(context.Background(), job.ID, "testorg/testmodel", "mlx", "", false, "auto")
 
 	got := destD.jobs.Get(job.ID)
 	if got.Status != JobCompleted {
@@ -639,7 +640,7 @@ func TestPeerTransfer_FallbackToHF(t *testing.T) {
 	// Execute pull — peer transfer will fail, should fall back to HF.
 	// HF will also fail (invalid repo), but the important thing is the fallback path is taken.
 	job := destD.jobs.Create("testorg/testmodel", "mlx", "", "dest-node")
-	destD.executePull(job.ID, "testorg/testmodel", "mlx", "", false, "auto")
+	destD.executePull(context.Background(), job.ID, "testorg/testmodel", "mlx", "", false, "auto")
 
 	got := destD.jobs.Get(job.ID)
 	// Should fail because HF download also fails (no real repo), but the job should
@@ -812,7 +813,7 @@ func TestTransferSnapshot_UsesStagingDirectory(t *testing.T) {
 	jobID := d.jobs.Create(repoID, format, "", "test-node").ID
 
 	// Run the transfer.
-	err := d.transferSnapshot(jobID, &buf, int64(buf.Len()), repoID, format)
+	err := d.transferSnapshot(context.Background(), jobID, &buf, int64(buf.Len()), repoID, format)
 	if err != nil {
 		t.Fatalf("transferSnapshot failed: %v", err)
 	}
@@ -854,5 +855,231 @@ func TestTransferSnapshot_StagingNotVisibleInInventory(t *testing.T) {
 	entries := inv.Entries()
 	if len(entries) != 0 {
 		t.Fatalf("expected 0 entries (staging should be invisible), got %d", len(entries))
+	}
+}
+
+func TestTransferGGUF_CancelKeepsPartial(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Create a slow server that blocks mid-transfer so we can cancel.
+	slowData := bytes.Repeat([]byte("x"), 512)
+	ready := make(chan struct{})
+	serverDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(slowData)*2))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		w.Write(slowData)
+		w.(http.Flusher).Flush()
+		close(ready)    // Signal that we've written first half.
+		<-serverDone    // Block until test cancels.
+	}))
+	defer server.Close()
+	defer close(serverDone)
+
+	sAddr := server.Listener.Addr().(*net.TCPAddr)
+	peer := &peerSource{Name: "source", Address: sAddr.IP.String(), Port: sAddr.Port}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	repoID := "Qwen/Qwen3-0.6B-GGUF"
+	quant := "Q4_K_M"
+
+	job := d.jobs.Create(repoID, "gguf", quant, "test-node")
+	transferErr := make(chan error, 1)
+	go func() {
+		transferErr <- d.transferFromPeer(ctx, job.ID, peer, repoID, "gguf", quant)
+	}()
+
+	// Wait until first chunk written, then cancel.
+	<-ready
+	cancel()
+	err := <-transferErr
+	if err == nil {
+		t.Fatal("expected error on cancelled transfer, got nil")
+	}
+
+	// Partial file must still exist (kept for potential resume).
+	destPath := filepath.Join(shelfRoot, "gguf", "Qwen", "Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q4_K_M.gguf")
+	partialPath := destPath + ".partial"
+	if _, statErr := os.Stat(partialPath); statErr != nil {
+		t.Error("expected partial file to be preserved for resume after cancel, but it was deleted")
+	}
+	// Final file must NOT exist.
+	if _, statErr := os.Stat(destPath); statErr == nil {
+		t.Error("final file must not exist after cancelled transfer")
+	}
+}
+
+func TestTransferGGUF_NonCancelErrorCleansPartial(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	cfg := &meshconfig.Config{
+		Name:      "test-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	// Server that abruptly closes mid-transfer (not a cancellation).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "10000")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write(bytes.Repeat([]byte("x"), 100))
+		// Hijack and forcibly close to simulate a network error.
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	sAddr := server.Listener.Addr().(*net.TCPAddr)
+	peer := &peerSource{Name: "source", Address: sAddr.IP.String(), Port: sAddr.Port}
+
+	repoID := "Qwen/Qwen3-0.6B-GGUF"
+	quant := "Q4_K_M"
+	job := d.jobs.Create(repoID, "gguf", quant, "test-node")
+	err := d.transferFromPeer(context.Background(), job.ID, peer, repoID, "gguf", quant)
+	if err == nil {
+		t.Fatal("expected error from abrupt close, got nil")
+	}
+
+	// On non-cancellation error the partial file must be cleaned up.
+	destPath := filepath.Join(shelfRoot, "gguf", "Qwen", "Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q4_K_M.gguf")
+	partialPath := destPath + ".partial"
+	if _, statErr := os.Stat(partialPath); statErr == nil {
+		t.Error("partial file should be removed after non-cancellation transfer error")
+	}
+}
+
+func TestTransferGGUF_ResumeFromOffset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	// Build the full model data (two halves).
+	firstHalf := bytes.Repeat([]byte("A"), resumeThresholdBytes)
+	secondHalf := bytes.Repeat([]byte("B"), 1024)
+	fullData := append(firstHalf, secondHalf...)
+
+	// Place the first half as the partial file (simulating a prior interrupted transfer).
+	destPath := filepath.Join(shelfRoot, "gguf", "Qwen", "Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q4_K_M.gguf")
+	os.MkdirAll(filepath.Dir(destPath), 0o755)
+	partialPath := destPath + ".partial"
+	os.WriteFile(partialPath, firstHalf, 0o644)
+
+	// Source node serves the FULL model. The client should send a Range header
+	// so the server returns only the second half.
+	sourceShelf := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(sourceShelf, f), 0o755)
+	}
+	ggufDir := filepath.Join(sourceShelf, "gguf", "Qwen", "Qwen3-0.6B-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	os.WriteFile(filepath.Join(ggufDir, "Qwen3-0.6B-Q4_K_M.gguf"), fullData, 0o644)
+
+	sourceCfg := &meshconfig.Config{
+		Name:      "source-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: sourceShelf,
+	}
+	sourceD := New(sourceCfg)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceD.handleModelDownload(w, r)
+	}))
+	defer server.Close()
+
+	cfg := &meshconfig.Config{
+		Name:      "dest-node",
+		Port:      8845,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	sAddr := server.Listener.Addr().(*net.TCPAddr)
+	peer := &peerSource{Name: "source", Address: sAddr.IP.String(), Port: sAddr.Port}
+
+	job := d.jobs.Create("Qwen/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M", "dest-node")
+	err := d.transferFromPeer(context.Background(), job.ID, peer, "Qwen/Qwen3-0.6B-GGUF", "gguf", "Q4_K_M")
+	if err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+
+	// Final file must match the full expected data.
+	got, readErr := os.ReadFile(destPath)
+	if readErr != nil {
+		t.Fatalf("final file not found: %v", readErr)
+	}
+	if !bytes.Equal(got, fullData) {
+		t.Fatalf("final file content mismatch: got %d bytes, want %d", len(got), len(fullData))
+	}
+	// Partial file must be gone.
+	if _, statErr := os.Stat(partialPath); statErr == nil {
+		t.Error("partial file should be removed after successful resume")
+	}
+}
+
+func TestHandleModelDownload_GGUF_RangeRequest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	shelfRoot := t.TempDir()
+	for _, f := range []string{"gguf", "mlx", "safetensors"} {
+		os.MkdirAll(filepath.Join(shelfRoot, f), 0o755)
+	}
+
+	modelData := bytes.Repeat([]byte("x"), 1024)
+	ggufDir := filepath.Join(shelfRoot, "gguf", "Qwen", "TestModel-GGUF")
+	os.MkdirAll(ggufDir, 0o755)
+	os.WriteFile(filepath.Join(ggufDir, "TestModel-Q4_K_M.gguf"), modelData, 0o644)
+
+	cfg := &meshconfig.Config{
+		Name:      "source-node",
+		Port:      8844,
+		Roles:     []string{"store"},
+		ShelfRoot: shelfRoot,
+	}
+	d := New(cfg)
+
+	offset := 512
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/gguf/Qwen/TestModel-GGUF/download?quant=Q4_K_M", nil)
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	w := httptest.NewRecorder()
+	d.handleModelDownload(w, req)
+
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if !bytes.Equal(w.Body.Bytes(), modelData[offset:]) {
+		t.Errorf("range response body mismatch: got %d bytes, want %d", w.Body.Len(), len(modelData)-offset)
+	}
+	if w.Header().Get("Content-Range") == "" {
+		t.Error("expected Content-Range header in 206 response")
 	}
 }

@@ -115,7 +115,7 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 	if format == "gguf" {
 		// GGUF is a single file. Serve with a large copy buffer instead of
 		// http.ServeFile (which uses a 32KB pool buffer) to reduce syscall
-		// overhead ~32x on fast LANs.
+		// overhead ~32x on fast LANs. Also supports Range requests for resume.
 		f, openErr := os.Open(shelfPath)
 		if openErr != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -124,9 +124,29 @@ func (d *Daemon) handleModelDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer f.Close()
+
+		// Support Range: bytes=N- for transfer resume.
+		startByte := int64(0)
+		if rangeHdr := r.Header.Get("Range"); rangeHdr != "" {
+			var n int64
+			if _, scanErr := fmt.Sscanf(rangeHdr, "bytes=%d-", &n); scanErr == nil && n > 0 && n < info.Size() {
+				if _, seekErr := f.Seek(n, io.SeekStart); seekErr == nil {
+					startByte = n
+				}
+			}
+		}
+
+		remaining := info.Size() - startByte
 		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(shelfPath)))
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+		if startByte > 0 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", startByte, info.Size()-1, info.Size()))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", remaining))
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", remaining))
+		}
 		buf := make([]byte, transferBufferSize)
 		if _, err := io.CopyBuffer(w, f, buf); err != nil {
 			log.Printf("transfer: gguf stream error for %s: %v", shelfPath, err)
@@ -246,6 +266,10 @@ const (
 	// throughput on high-latency links: at 40ms RTT, 87KB window → ~2 MB/s ceiling.
 	// A 4MB window raises that ceiling to ~100 MB/s, matching Tailscale's capacity.
 	transferSocketBufSize = 4 * 1024 * 1024
+
+	// resumeThresholdBytes is the minimum .partial file size to attempt resume-from-offset.
+	// Partial files smaller than this are discarded and the transfer starts fresh.
+	resumeThresholdBytes = 100 * 1024 * 1024 // 100MB
 )
 
 // peerSource describes a mesh peer that has a model available for transfer.
@@ -308,7 +332,7 @@ func (d *Daemon) findPeerWithModel(repoID, format, quant string) *peerSource {
 
 // transferFromPeer downloads a model from a peer node's download endpoint.
 // Returns nil on success, or an error if the transfer fails.
-func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format, quant string) error {
+func (d *Daemon) transferFromPeer(ctx context.Context, jobID string, peer *peerSource, repoID, format, quant string) error {
 	d.jobs.SetTransferring(jobID, peer.Name)
 	log.Printf("transfer: starting peer transfer of %s (format=%s, quant=%s) from %s, job=%s",
 		repoID, format, quant, peer.Name, jobID)
@@ -325,12 +349,22 @@ func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format
 		url += "?quant=" + quant
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
 	if d.cfg.MeshKey != "" {
 		req.Header.Set("Authorization", "Bearer "+d.cfg.MeshKey)
+	}
+
+	// For GGUF, check for a large partial file and request resume from offset.
+	var startOffset int64
+	if format == "gguf" {
+		startOffset = ggufPartialOffset(d.cfg.ShelfRoot, repoID, quant)
+		if startOffset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+			log.Printf("transfer: resuming %s from offset %d", repoID, startOffset)
+		}
 	}
 
 	// Use a transport with large userspace I/O buffers and a custom dialer that
@@ -365,23 +399,41 @@ func (d *Daemon) transferFromPeer(jobID string, peer *peerSource, repoID, format
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("peer %s returned HTTP %d", peer.Name, resp.StatusCode)
 	}
 
 	// Set total bytes from Content-Length if available.
+	// For a 206 response, Content-Length is the remaining bytes; add startOffset for total.
 	if resp.ContentLength > 0 {
-		d.jobs.SetProgress(jobID, 0, resp.ContentLength)
+		total := resp.ContentLength + startOffset
+		d.jobs.SetProgress(jobID, startOffset, total)
 	}
 
 	if format == "gguf" {
-		return d.transferGGUF(jobID, resp.Body, resp.ContentLength, repoID, quant)
+		return d.transferGGUF(ctx, jobID, resp.Body, resp.ContentLength, repoID, quant, startOffset)
 	}
-	return d.transferSnapshot(jobID, resp.Body, resp.ContentLength, repoID, format)
+	return d.transferSnapshot(ctx, jobID, resp.Body, resp.ContentLength, repoID, format)
+}
+
+// ggufPartialOffset returns the byte offset to resume a GGUF transfer from, based
+// on the size of any existing .partial file. Returns 0 if no large partial exists.
+func ggufPartialOffset(shelfRoot, repoID, quant string) int64 {
+	path, err := resolver.ShelfPathGGUF(shelfRoot, repoID, quant)
+	if err != nil {
+		return 0
+	}
+	info, err := os.Stat(path + resolver.PartialSuffix)
+	if err != nil || info.Size() < resumeThresholdBytes {
+		return 0
+	}
+	return info.Size()
 }
 
 // transferGGUF downloads a single GGUF file from the response body.
-func (d *Daemon) transferGGUF(jobID string, body io.Reader, totalBytes int64, repoID, quant string) error {
+// startOffset > 0 means the response is a 206 partial; the partial file already
+// contains startOffset bytes and the file is opened in append mode.
+func (d *Daemon) transferGGUF(ctx context.Context, jobID string, body io.Reader, responseBytes int64, repoID, quant string, startOffset int64) error {
 	destPath, err := resolver.ShelfPathGGUF(d.cfg.ShelfRoot, repoID, quant)
 	if err != nil {
 		return err
@@ -394,18 +446,39 @@ func (d *Daemon) transferGGUF(jobID string, body io.Reader, totalBytes int64, re
 
 	// Write to a partial file, then rename atomically.
 	partial := destPath + resolver.PartialSuffix
-	f, err := os.Create(partial)
+
+	var f *os.File
+	if startOffset > 0 {
+		// Resuming: open existing partial in append mode.
+		f, err = os.OpenFile(partial, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			// Partial disappeared (TOCTOU after we sent "Range: bytes=N-") or is
+			// unwritable. The response body contains only the tail bytes. Do not
+			// Create + write the short body (would yield truncated/corrupt final
+			// model after rename). Return err so caller falls back to full HF.
+			return fmt.Errorf("failed to open %s for resume at offset %d: %w", partial, startOffset, err)
+		}
+	} else {
+		f, err = os.Create(partial)
+	}
 	if err != nil {
 		return fmt.Errorf("creating file: %w", err)
 	}
 
+	// totalBytes is the full expected file size (already-downloaded + remaining).
+	totalBytes := responseBytes + startOffset
+
 	// Use progressReader to throttle progress updates (every 1MB).
-	pr := &progressReader{reader: body, jobID: jobID, total: totalBytes, jobs: d.jobs}
+	pr := &progressReader{reader: body, jobID: jobID, total: totalBytes, jobs: d.jobs, read: startOffset, lastRpt: startOffset}
 	buf := make([]byte, transferBufferSize)
 	_, copyErr := io.CopyBuffer(f, pr, buf)
 	if copyErr != nil {
 		f.Close()
-		os.Remove(partial)
+		if ctx.Err() == nil {
+			// Non-cancellation error: discard partial (corrupted/incomplete).
+			os.Remove(partial)
+		}
+		// On cancellation, leave the partial file for potential resume next run.
 		return fmt.Errorf("writing file: %w", copyErr)
 	}
 
@@ -426,7 +499,8 @@ func (d *Daemon) transferGGUF(jobID string, body io.Reader, totalBytes int64, re
 // transferSnapshot downloads a tar archive from the response body and extracts it.
 // Uses a dot-prefixed staging directory to prevent incomplete models from appearing
 // in inventory scans. Only renames to the final path on successful completion.
-func (d *Daemon) transferSnapshot(jobID string, body io.Reader, totalBytes int64, repoID, format string) error {
+// On context cancellation, the staging directory is cleaned up.
+func (d *Daemon) transferSnapshot(ctx context.Context, jobID string, body io.Reader, totalBytes int64, repoID, format string) error {
 	destDir, err := resolver.ShelfPathSnapshot(d.cfg.ShelfRoot, repoID, format)
 	if err != nil {
 		return err
