@@ -111,7 +111,8 @@ func DownloadFile(url, dest string, opts DownloadOptions) error {
 		writer = io.MultiWriter(f, bar)
 	}
 
-	if _, err := io.Copy(writer, resp.Body); err != nil {
+	buf := make([]byte, 2*1024*1024) // 2 MB copy buffer — reduces syscalls on large files
+	if _, err := io.CopyBuffer(writer, resp.Body, buf); err != nil {
 		f.Close()
 		os.Remove(partialPath)
 		return fmt.Errorf("writing %s: %w", dest, err)
