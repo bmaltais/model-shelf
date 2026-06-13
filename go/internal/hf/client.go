@@ -2,19 +2,64 @@
 package hf
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/schollz/progressbar/v3"
 )
 
-const defaultHFBase = "https://huggingface.co"
+const (
+	defaultHFBase   = "https://huggingface.co"
+	downloadChunk   = 10 * 1024 * 1024 // 10 MB — matches huggingface_hub Python library
+	maxRetries      = 5
+	baseRetryWait   = time.Second
+	maxRetryWait    = 8 * time.Second
+	metaTimeout     = 30 * time.Second
+)
+
+var reSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// hfTransport strips Authorization on cross-domain redirects (HF → CDN).
+type hfTransport struct{ base http.RoundTripper }
+
+func (t *hfTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.base.RoundTrip(req)
+}
+
+// hfClient is a shared HTTP client tuned for HF Hub downloads.
+var hfClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
+	// Strip Authorization when a redirect crosses to a different host (e.g. HF → S3/CDN).
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 {
+			prev := via[len(via)-1]
+			if req.URL.Host != prev.URL.Host {
+				req.Header.Del("Authorization")
+			}
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	},
+}
 
 // DownloadOptions configures a DownloadFile call.
 type DownloadOptions struct {
@@ -37,48 +82,94 @@ func LoadToken() string {
 		return tok
 	}
 	home, _ := os.UserHomeDir()
-	tokenPath := filepath.Join(home, ".cache", "huggingface", "token")
-	data, err := os.ReadFile(tokenPath)
+	data, err := os.ReadFile(filepath.Join(home, ".cache", "huggingface", "token"))
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
 }
 
-// DownloadFile downloads url to dest, resuming from a .partial file if present.
-// On success, renames .partial → dest. On error, deletes .partial.
-func DownloadFile(url, dest string, opts DownloadOptions) error {
+// DownloadFile downloads url to dest with resume, retry, and optional progress.
+// Temp file is dest+".partial". On success it is renamed to dest atomically.
+func DownloadFile(fileURL, dest string, opts DownloadOptions) error {
 	token := opts.Token
 	if token == "" {
 		token = LoadToken()
 	}
 
+	// Head request to get content length for disk space check and progress total.
+	totalSize, etag := fetchMeta(fileURL, token)
+
+	// Disk space preflight.
+	if totalSize > 0 {
+		if stat, err := os.Stat(filepath.Dir(dest)); err == nil && stat.IsDir() {
+			if free := diskFree(filepath.Dir(dest)); free > 0 && free < uint64(totalSize) {
+				return fmt.Errorf("not enough disk space: need %d bytes, have %d", totalSize, free)
+			}
+		}
+	}
+
 	partialPath := dest + ".partial"
+
+	var bar *progressbar.ProgressBar
+	if !opts.NoProgress {
+		bar = progressbar.DefaultBytes(totalSize, filepath.Base(dest))
+	}
+
+	return downloadWithRetry(fileURL, dest, partialPath, token, totalSize, etag, bar)
+}
+
+func downloadWithRetry(fileURL, dest, partialPath, token string, totalSize int64, etag string, bar *progressbar.ProgressBar) error {
+	wait := baseRetryWait
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := downloadOnce(fileURL, dest, partialPath, token, totalSize, etag, bar)
+		if err == nil {
+			return nil
+		}
+		if !isRetryable(err) || attempt == maxRetries {
+			os.Remove(partialPath)
+			return err
+		}
+		time.Sleep(wait)
+		wait = time.Duration(math.Min(float64(wait*2), float64(maxRetryWait)))
+	}
+	return fmt.Errorf("download failed after %d retries", maxRetries)
+}
+
+func downloadOnce(fileURL, dest, partialPath, token string, totalSize int64, etag string, bar *progressbar.ProgressBar) error {
+	// Resume from existing partial file.
 	var offset int64
 	if info, err := os.Stat(partialPath); err == nil {
 		offset = info.Size()
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	setCommonHeaders(req, token)
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hfClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
+		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		os.Remove(partialPath)
-		return fmt.Errorf("GET %s: status %s", url, resp.Status)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// Server ignored our Range header — start fresh.
+		offset = 0
+	case http.StatusPartialContent:
+		// Resume from offset — good.
+	case http.StatusTooManyRequests:
+		wait := retryAfter(resp)
+		time.Sleep(wait)
+		return fmt.Errorf("rate limited (429)")
+	default:
+		return fmt.Errorf("GET %s: status %s", fileURL, resp.Status)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -90,34 +181,35 @@ func DownloadFile(url, dest string, opts DownloadOptions) error {
 		flags |= os.O_APPEND
 	} else {
 		flags |= os.O_TRUNC
-		offset = 0
 	}
-
 	f, err := os.OpenFile(partialPath, flags, 0o644)
 	if err != nil {
 		return fmt.Errorf("opening partial file: %w", err)
 	}
 
-	var writer io.Writer = f
-	if !opts.NoProgress {
-		total := resp.ContentLength
-		if offset > 0 && total > 0 {
-			total += offset
-		}
-		bar := progressbar.DefaultBytes(total, filepath.Base(dest))
-		if offset > 0 {
-			bar.Add64(offset)
-		}
-		writer = io.MultiWriter(f, bar)
+	if bar != nil && offset > 0 {
+		bar.Add64(offset)
 	}
 
-	buf := make([]byte, 2*1024*1024) // 2 MB copy buffer — reduces syscalls on large files
-	if _, err := io.CopyBuffer(writer, resp.Body, buf); err != nil {
+	var w io.Writer = f
+	if bar != nil {
+		w = io.MultiWriter(f, bar)
+	}
+
+	buf := make([]byte, downloadChunk)
+	if _, err := io.CopyBuffer(w, resp.Body, buf); err != nil {
 		f.Close()
-		os.Remove(partialPath)
-		return fmt.Errorf("writing %s: %w", dest, err)
+		return err // retryable — partial file kept for next attempt
 	}
 	f.Close()
+
+	// SHA256 integrity check when ETag is a blob hash (LFS files).
+	if etag != "" && reSHA256.MatchString(etag) {
+		if err := verifySHA256(partialPath, etag); err != nil {
+			os.Remove(partialPath)
+			return fmt.Errorf("integrity check failed: %w", err)
+		}
+	}
 
 	if err := os.Rename(partialPath, dest); err != nil {
 		os.Remove(partialPath)
@@ -130,8 +222,7 @@ type hfFile struct {
 	RfileName string `json:"rfilename"`
 }
 
-// DownloadSnapshot downloads all files in a HF repo snapshot to destDir.
-// Files are downloaded in parallel. allowPatterns uses simple glob matching.
+// DownloadSnapshot downloads all files in a HF repo snapshot to destDir in parallel.
 func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 	token := opts.Token
 	if token == "" {
@@ -173,9 +264,9 @@ func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				url := fmt.Sprintf("%s/%s/resolve/main/%s", defaultHFBase, repoID, j.filename)
-				dest := filepath.Join(destDir, filepath.FromSlash(j.filename))
-				if err := DownloadFile(url, dest, DownloadOptions{Token: token, NoProgress: opts.NoProgress}); err != nil {
+				u := fmt.Sprintf("%s/%s/resolve/main/%s", defaultHFBase, repoID, j.filename)
+				dst := filepath.Join(destDir, filepath.FromSlash(j.filename))
+				if err := DownloadFile(u, dst, DownloadOptions{Token: token, NoProgress: opts.NoProgress}); err != nil {
 					errs <- err
 				}
 			}
@@ -185,21 +276,37 @@ func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 	close(errs)
 
 	for err := range errs {
-		return err // return first error
+		return err
 	}
 	return nil
 }
 
+// fetchMeta does a HEAD request to get content-length and etag without downloading.
+func fetchMeta(fileURL, token string) (size int64, etag string) {
+	req, err := http.NewRequest(http.MethodHead, fileURL, nil)
+	if err != nil {
+		return -1, ""
+	}
+	setCommonHeaders(req, token)
+	client := &http.Client{Timeout: metaTimeout, CheckRedirect: hfClient.CheckRedirect}
+	resp, err := client.Do(req)
+	if err != nil {
+		return -1, ""
+	}
+	resp.Body.Close()
+	etag = strings.Trim(resp.Header.Get("ETag"), `"`)
+	return resp.ContentLength, etag
+}
+
 func listRepoFiles(repoID, token string) ([]string, error) {
-	url := fmt.Sprintf("%s/api/models/%s", defaultHFBase, repoID)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	u := fmt.Sprintf("%s/api/models/%s", defaultHFBase, repoID)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
+	setCommonHeaders(req, token)
+	client := &http.Client{Timeout: metaTimeout, CheckRedirect: hfClient.CheckRedirect}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching repo info for %s: %w", repoID, err)
 	}
@@ -220,6 +327,16 @@ func listRepoFiles(repoID, token string) ([]string, error) {
 	return names, nil
 }
 
+func setCommonHeaders(req *http.Request, token string) {
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	// Prevent content-encoding compression so Content-Length is accurate for
+	// progress bars and disk space checks (mirrors huggingface_hub behaviour).
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("User-Agent", "model-shelf/0.7 (go)")
+}
+
 func matchesPatterns(filename string, patterns []string) bool {
 	if len(patterns) == 0 {
 		return true
@@ -234,4 +351,56 @@ func matchesPatterns(filename string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "rate limited") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "EOF") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "status 500") ||
+		strings.Contains(s, "status 502") ||
+		strings.Contains(s, "status 503") ||
+		strings.Contains(s, "status 504")
+}
+
+func retryAfter(resp *http.Response) time.Duration {
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil {
+			return time.Duration(secs+1) * time.Second
+		}
+	}
+	return baseRetryWait
+}
+
+func verifySHA256(path, want string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	buf := make([]byte, downloadChunk)
+	if _, err := io.CopyBuffer(h, f, buf); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != want {
+		return fmt.Errorf("sha256 mismatch: got %s, want %s", got, want)
+	}
+	return nil
+}
+
+func diskFree(dir string) uint64 {
+	return diskFreeOS(dir)
+}
+
+// resolveURL is used in tests to override the base URL.
+func resolveURL(base, repoID, filename string) string {
+	u, _ := url.JoinPath(base, repoID, "resolve", "main", filename)
+	return u
 }
