@@ -191,7 +191,10 @@ func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 
 func listRepoFiles(repoID, token string) ([]string, error) {
 	url := fmt.Sprintf("%s/api/models/%s", defaultHFBase, repoID)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
