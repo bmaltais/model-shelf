@@ -380,20 +380,56 @@ func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 }
 
 // fetchMeta does a HEAD request to get content-length and etag.
+// For LFS files HF returns a 302 whose X-Linked-ETag header carries the
+// SHA-256 of the actual content; the CDN ETag is unrelated to content SHA-256.
+// We therefore stop at the first response to read X-Linked-ETag, then follow
+// the redirect (if any) to obtain the real Content-Length.
 func fetchMeta(fileURL, token string) (size int64, etag string) {
 	req, err := http.NewRequest(http.MethodHead, fileURL, nil)
 	if err != nil {
 		return -1, ""
 	}
 	setCommonHeaders(req, token)
-	client := &http.Client{Timeout: metaTimeout, CheckRedirect: hfClient.CheckRedirect}
-	resp, err := client.Do(req)
+
+	noRedirect := &http.Client{
+		Timeout: metaTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := noRedirect.Do(req)
 	if err != nil {
 		return -1, ""
 	}
 	resp.Body.Close()
-	etag = strings.Trim(resp.Header.Get("ETag"), `"`)
-	return resp.ContentLength, etag
+
+	// X-Linked-ETag is the content SHA-256 for LFS files; fall back to ETag.
+	if e := strings.Trim(resp.Header.Get("X-Linked-ETag"), `"`); e != "" {
+		etag = e
+	} else {
+		etag = strings.Trim(resp.Header.Get("ETag"), `"`)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		return resp.ContentLength, etag
+	}
+
+	// Follow the redirect to get Content-Length from the final storage URL.
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return -1, etag
+	}
+	req2, err := http.NewRequest(http.MethodHead, location, nil)
+	if err != nil {
+		return -1, etag
+	}
+	req2.Header.Set("Accept-Encoding", "identity")
+	followClient := &http.Client{Timeout: metaTimeout, CheckRedirect: hfClient.CheckRedirect}
+	if resp2, err := followClient.Do(req2); err == nil {
+		resp2.Body.Close()
+		return resp2.ContentLength, etag
+	}
+	return -1, etag
 }
 
 func listRepoFiles(repoID, token string) ([]string, error) {
