@@ -1,10 +1,3 @@
-module github.com/alexziskind1/model-shelf
+module github.com/bmaltais/model-shelf
 
-go 1.25.0
-
-require github.com/BurntSushi/toml v1.4.0
-
-require (
-	golang.org/x/sys v0.44.0 // indirect
-	golang.org/x/term v0.43.0 // indirect
-)
+go 1.26.3
