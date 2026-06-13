@@ -9,7 +9,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,7 +22,9 @@ import (
 
 const (
 	defaultHFBase   = "https://huggingface.co"
-	downloadChunk   = 10 * 1024 * 1024 // 10 MB — matches huggingface_hub Python library
+	readBufSize     = 10 * 1024 * 1024 // 10 MB read buffer — matches huggingface_hub
+	parallelWorkers = 8                 // concurrent range connections per file
+	parallelMin     = 50 * 1024 * 1024 // only parallelize when size is known and > 50 MB
 	maxRetries      = 5
 	baseRetryWait   = time.Second
 	maxRetryWait    = 8 * time.Second
@@ -32,27 +33,17 @@ const (
 
 var reSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// hfTransport strips Authorization on cross-domain redirects (HF → CDN).
-type hfTransport struct{ base http.RoundTripper }
-
-func (t *hfTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return t.base.RoundTrip(req)
-}
-
 // hfClient is a shared HTTP client tuned for HF Hub downloads.
 var hfClient = &http.Client{
 	Transport: &http.Transport{
 		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
+		MaxIdleConnsPerHost: parallelWorkers + 4,
 		IdleConnTimeout:     90 * time.Second,
 	},
-	// Strip Authorization when a redirect crosses to a different host (e.g. HF → S3/CDN).
+	// Strip Authorization when a redirect crosses to a different host (HF → S3/CDN).
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) > 0 {
-			prev := via[len(via)-1]
-			if req.URL.Host != prev.URL.Host {
-				req.Header.Del("Authorization")
-			}
+		if len(via) > 0 && req.URL.Host != via[len(via)-1].URL.Host {
+			req.Header.Del("Authorization")
 		}
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
@@ -72,7 +63,7 @@ type SnapshotOptions struct {
 	AllowPatterns []string // nil means download everything
 	Token         string
 	NoProgress    bool
-	Workers       int // parallel download workers; 0 = 4
+	Workers       int // parallel files for snapshot; 0 = 4
 }
 
 // LoadToken returns the HF auth token, or "" if none is configured.
@@ -89,24 +80,25 @@ func LoadToken() string {
 	return strings.TrimSpace(string(data))
 }
 
-// DownloadFile downloads url to dest with resume, retry, and optional progress.
-// Temp file is dest+".partial". On success it is renamed to dest atomically.
+// DownloadFile downloads fileURL to dest. For large files (>50 MB) it uses
+// parallel range requests. On success the file is atomically renamed to dest.
 func DownloadFile(fileURL, dest string, opts DownloadOptions) error {
 	token := opts.Token
 	if token == "" {
 		token = LoadToken()
 	}
 
-	// Head request to get content length for disk space check and progress total.
-	totalSize, etag := fetchMeta(fileURL, token)
+	totalSize, etag, acceptsRanges := fetchMeta(fileURL, token)
 
-	// Disk space preflight.
 	if totalSize > 0 {
-		if stat, err := os.Stat(filepath.Dir(dest)); err == nil && stat.IsDir() {
-			if free := diskFree(filepath.Dir(dest)); free > 0 && free < uint64(totalSize) {
-				return fmt.Errorf("not enough disk space: need %d bytes, have %d", totalSize, free)
-			}
+		if free := diskFree(filepath.Dir(dest)); free > 0 && free < uint64(totalSize) {
+			return fmt.Errorf("not enough disk space: need %s, have %s",
+				fmtBytes(totalSize), fmtBytes(int64(free)))
 		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
 	}
 
 	partialPath := dest + ".partial"
@@ -116,18 +108,141 @@ func DownloadFile(fileURL, dest string, opts DownloadOptions) error {
 		bar = progressbar.DefaultBytes(totalSize, filepath.Base(dest))
 	}
 
-	return downloadWithRetry(fileURL, dest, partialPath, token, totalSize, etag, bar)
+	var err error
+	if acceptsRanges && totalSize >= parallelMin {
+		err = downloadParallel(fileURL, partialPath, token, totalSize, bar)
+	} else {
+		err = downloadSingle(fileURL, partialPath, token, totalSize, bar)
+	}
+	if err != nil {
+		os.Remove(partialPath)
+		return err
+	}
+
+	if etag != "" && reSHA256.MatchString(etag) {
+		if err := verifySHA256(partialPath, etag); err != nil {
+			os.Remove(partialPath)
+			return fmt.Errorf("integrity check failed: %w", err)
+		}
+	}
+
+	if err := os.Rename(partialPath, dest); err != nil {
+		os.Remove(partialPath)
+		return fmt.Errorf("renaming partial file: %w", err)
+	}
+	return nil
 }
 
-func downloadWithRetry(fileURL, dest, partialPath, token string, totalSize int64, etag string, bar *progressbar.ProgressBar) error {
+// downloadParallel splits the file into parallelWorkers equal ranges and
+// downloads them concurrently into a pre-allocated file using WriteAt.
+func downloadParallel(fileURL, partialPath, token string, totalSize int64, bar *progressbar.ProgressBar) error {
+	// Pre-allocate the file so all goroutines can WriteAt independently.
+	f, err := os.OpenFile(partialPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(totalSize); err != nil {
+		f.Close()
+		return fmt.Errorf("pre-allocating %s: %w", partialPath, err)
+	}
+	f.Close()
+
+	type chunkRange struct{ start, end int64 }
+	chunkSize := (totalSize + parallelWorkers - 1) / parallelWorkers
+
+	chunks := make(chan chunkRange, parallelWorkers)
+	for start := int64(0); start < totalSize; start += chunkSize {
+		end := start + chunkSize - 1
+		if end >= totalSize {
+			end = totalSize - 1
+		}
+		chunks <- chunkRange{start, end}
+	}
+	close(chunks)
+
+	errs := make(chan error, parallelWorkers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < parallelWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each goroutine opens its own file descriptor for WriteAt.
+			f, err := os.OpenFile(partialPath, os.O_WRONLY, 0o644)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer f.Close()
+
+			for c := range chunks {
+				if err := downloadChunk(fileURL, token, c.start, c.end, f, bar); err != nil {
+					errs <- fmt.Errorf("chunk %d-%d: %w", c.start, c.end, err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		return err
+	}
+	return nil
+}
+
+// downloadChunk downloads bytes [start, end] of fileURL and writes them at
+// the correct offset in f using WriteAt (safe for concurrent goroutines).
+func downloadChunk(fileURL, token string, start, end int64, f *os.File, bar *progressbar.ProgressBar) error {
+	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	if err != nil {
+		return err
+	}
+	setCommonHeaders(req, token)
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+
+	resp, err := hfClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("server returned %s (range not supported?)", resp.Status)
+	}
+
+	buf := make([]byte, readBufSize)
+	offset := start
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := f.WriteAt(buf[:n], offset); writeErr != nil {
+				return writeErr
+			}
+			offset += int64(n)
+			if bar != nil {
+				bar.Add(n)
+			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+// downloadSingle downloads the file as a single stream with resume support.
+func downloadSingle(fileURL, partialPath, token string, totalSize int64, bar *progressbar.ProgressBar) error {
 	wait := baseRetryWait
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		err := downloadOnce(fileURL, dest, partialPath, token, totalSize, etag, bar)
+		err := downloadSingleOnce(fileURL, partialPath, token, totalSize, bar)
 		if err == nil {
 			return nil
 		}
 		if !isRetryable(err) || attempt == maxRetries {
-			os.Remove(partialPath)
 			return err
 		}
 		time.Sleep(wait)
@@ -136,8 +251,7 @@ func downloadWithRetry(fileURL, dest, partialPath, token string, totalSize int64
 	return fmt.Errorf("download failed after %d retries", maxRetries)
 }
 
-func downloadOnce(fileURL, dest, partialPath, token string, totalSize int64, etag string, bar *progressbar.ProgressBar) error {
-	// Resume from existing partial file.
+func downloadSingleOnce(fileURL, partialPath, token string, totalSize int64, bar *progressbar.ProgressBar) error {
 	var offset int64
 	if info, err := os.Stat(partialPath); err == nil {
 		offset = info.Size()
@@ -160,20 +274,14 @@ func downloadOnce(fileURL, dest, partialPath, token string, totalSize int64, eta
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// Server ignored our Range header — start fresh.
 		offset = 0
 	case http.StatusPartialContent:
-		// Resume from offset — good.
+		// resume — good
 	case http.StatusTooManyRequests:
-		wait := retryAfter(resp)
-		time.Sleep(wait)
+		time.Sleep(retryAfter(resp))
 		return fmt.Errorf("rate limited (429)")
 	default:
 		return fmt.Errorf("GET %s: status %s", fileURL, resp.Status)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
 	}
 
 	flags := os.O_CREATE | os.O_WRONLY
@@ -196,26 +304,12 @@ func downloadOnce(fileURL, dest, partialPath, token string, totalSize int64, eta
 		w = io.MultiWriter(f, bar)
 	}
 
-	buf := make([]byte, downloadChunk)
+	buf := make([]byte, readBufSize)
 	if _, err := io.CopyBuffer(w, resp.Body, buf); err != nil {
 		f.Close()
-		return err // retryable — partial file kept for next attempt
+		return err
 	}
-	f.Close()
-
-	// SHA256 integrity check when ETag is a blob hash (LFS files).
-	if etag != "" && reSHA256.MatchString(etag) {
-		if err := verifySHA256(partialPath, etag); err != nil {
-			os.Remove(partialPath)
-			return fmt.Errorf("integrity check failed: %w", err)
-		}
-	}
-
-	if err := os.Rename(partialPath, dest); err != nil {
-		os.Remove(partialPath)
-		return fmt.Errorf("renaming partial file: %w", err)
-	}
-	return nil
+	return f.Close()
 }
 
 type hfFile struct {
@@ -281,21 +375,22 @@ func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 	return nil
 }
 
-// fetchMeta does a HEAD request to get content-length and etag without downloading.
-func fetchMeta(fileURL, token string) (size int64, etag string) {
+// fetchMeta does a HEAD request to get content-length, etag, and range support.
+func fetchMeta(fileURL, token string) (size int64, etag string, acceptsRanges bool) {
 	req, err := http.NewRequest(http.MethodHead, fileURL, nil)
 	if err != nil {
-		return -1, ""
+		return -1, "", false
 	}
 	setCommonHeaders(req, token)
 	client := &http.Client{Timeout: metaTimeout, CheckRedirect: hfClient.CheckRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
-		return -1, ""
+		return -1, "", false
 	}
 	resp.Body.Close()
 	etag = strings.Trim(resp.Header.Get("ETag"), `"`)
-	return resp.ContentLength, etag
+	acceptsRanges = strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
+	return resp.ContentLength, etag, acceptsRanges
 }
 
 func listRepoFiles(repoID, token string) ([]string, error) {
@@ -331,8 +426,7 @@ func setCommonHeaders(req *http.Request, token string) {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	// Prevent content-encoding compression so Content-Length is accurate for
-	// progress bars and disk space checks (mirrors huggingface_hub behaviour).
+	// Prevents gzip compression so Content-Length reflects the true file size.
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("User-Agent", "model-shelf/0.7 (go)")
 }
@@ -384,7 +478,7 @@ func verifySHA256(path, want string) error {
 	}
 	defer f.Close()
 	h := sha256.New()
-	buf := make([]byte, downloadChunk)
+	buf := make([]byte, readBufSize)
 	if _, err := io.CopyBuffer(h, f, buf); err != nil {
 		return err
 	}
@@ -399,8 +493,13 @@ func diskFree(dir string) uint64 {
 	return diskFreeOS(dir)
 }
 
-// resolveURL is used in tests to override the base URL.
-func resolveURL(base, repoID, filename string) string {
-	u, _ := url.JoinPath(base, repoID, "resolve", "main", filename)
-	return u
+func fmtBytes(n int64) string {
+	f := float64(n)
+	for _, unit := range []string{"B", "KB", "MB", "GB", "TB"} {
+		if f < 1024 || unit == "TB" {
+			return fmt.Sprintf("%.1f %s", f, unit)
+		}
+		f /= 1024
+	}
+	return fmt.Sprintf("%.1f TB", f)
 }
