@@ -88,7 +88,7 @@ func DownloadFile(fileURL, dest string, opts DownloadOptions) error {
 		token = LoadToken()
 	}
 
-	totalSize, etag, acceptsRanges := fetchMeta(fileURL, token)
+	totalSize, etag := fetchMeta(fileURL, token)
 
 	if totalSize > 0 {
 		if free := diskFree(filepath.Dir(dest)); free > 0 && free < uint64(totalSize) {
@@ -109,8 +109,12 @@ func DownloadFile(fileURL, dest string, opts DownloadOptions) error {
 	}
 
 	var err error
-	if acceptsRanges && totalSize >= parallelMin {
+	if totalSize >= parallelMin {
 		err = downloadParallel(fileURL, partialPath, token, totalSize, bar)
+		if err != nil && strings.Contains(err.Error(), "range not supported") {
+			os.Remove(partialPath)
+			err = downloadSingle(fileURL, partialPath, token, totalSize, bar)
+		}
 	} else {
 		err = downloadSingle(fileURL, partialPath, token, totalSize, bar)
 	}
@@ -375,22 +379,21 @@ func DownloadSnapshot(repoID, destDir string, opts SnapshotOptions) error {
 	return nil
 }
 
-// fetchMeta does a HEAD request to get content-length, etag, and range support.
-func fetchMeta(fileURL, token string) (size int64, etag string, acceptsRanges bool) {
+// fetchMeta does a HEAD request to get content-length and etag.
+func fetchMeta(fileURL, token string) (size int64, etag string) {
 	req, err := http.NewRequest(http.MethodHead, fileURL, nil)
 	if err != nil {
-		return -1, "", false
+		return -1, ""
 	}
 	setCommonHeaders(req, token)
 	client := &http.Client{Timeout: metaTimeout, CheckRedirect: hfClient.CheckRedirect}
 	resp, err := client.Do(req)
 	if err != nil {
-		return -1, "", false
+		return -1, ""
 	}
 	resp.Body.Close()
 	etag = strings.Trim(resp.Header.Get("ETag"), `"`)
-	acceptsRanges = strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
-	return resp.ContentLength, etag, acceptsRanges
+	return resp.ContentLength, etag
 }
 
 func listRepoFiles(repoID, token string) ([]string, error) {
