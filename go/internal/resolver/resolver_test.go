@@ -84,6 +84,43 @@ func TestResolveLocal_GGUFHit(t *testing.T) {
 	}
 }
 
+func TestResolveLocal_GGUFDotSeparator(t *testing.T) {
+	root := t.TempDir()
+	// File uses "." separator instead of "-" (e.g. mradermacher style).
+	ggufPath := filepath.Join(root, "gguf", "mradermacher", "Model-GGUF", "Model.Q4_K_M.gguf")
+	os.MkdirAll(filepath.Dir(ggufPath), 0o755)
+	os.WriteFile(ggufPath, []byte("fake"), 0o644)
+
+	cfg := &resolver.Config{ShelfRoot: root, AllowDownloads: false}
+	result, err := resolver.ResolveLocal(cfg, "mradermacher/Model-GGUF", "gguf", "Q4_K_M")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "found" {
+		t.Errorf("Status = %q, want found (dot-separator file should be found by scan)", result.Status)
+	}
+	if result.Path != ggufPath {
+		t.Errorf("Path = %q, want %q", result.Path, ggufPath)
+	}
+}
+
+func TestFindLocalGGUF(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "gguf", "pub", "Repo-GGUF")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "Repo.Q5_K_M.gguf"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, "Repo.Q4_K_M.gguf"), []byte("x"), 0o644)
+
+	got := resolver.FindLocalGGUF(root, "pub/Repo-GGUF", "Q5_K_M")
+	want := filepath.Join(dir, "Repo.Q5_K_M.gguf")
+	if got != want {
+		t.Errorf("FindLocalGGUF = %q, want %q", got, want)
+	}
+	if resolver.FindLocalGGUF(root, "pub/Repo-GGUF", "Q8_0") != "" {
+		t.Error("FindLocalGGUF should return empty for unmatched quant")
+	}
+}
+
 func TestResolveLocal_Miss(t *testing.T) {
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "gguf"), 0o755)

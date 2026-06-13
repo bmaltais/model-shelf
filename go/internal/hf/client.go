@@ -432,6 +432,25 @@ func fetchMeta(fileURL, token string) (size int64, etag string) {
 	return -1, etag
 }
 
+// FindGGUFFilename lists the repo files and returns the base filename of the
+// first .gguf file whose name contains quant (case-insensitive).
+// Returns ("", nil) when no matching file is found.
+func FindGGUFFilename(repoID, quant, token string) (string, error) {
+	files, err := listRepoFiles(repoID, token)
+	if err != nil {
+		return "", err
+	}
+	ql := strings.ToLower(quant)
+	for _, f := range files {
+		base := filepath.Base(f)
+		bl := strings.ToLower(base)
+		if strings.HasSuffix(bl, ".gguf") && strings.Contains(bl, ql) {
+			return base, nil
+		}
+	}
+	return "", nil
+}
+
 func listRepoFiles(repoID, token string) ([]string, error) {
 	u := fmt.Sprintf("%s/api/models/%s", defaultHFBase, repoID)
 	req, err := http.NewRequest(http.MethodGet, u, nil)

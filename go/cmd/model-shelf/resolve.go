@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -13,6 +15,45 @@ import (
 	"github.com/bmaltais/model-shelf/internal/relocate"
 	"github.com/bmaltais/model-shelf/internal/resolver"
 )
+
+var reQuantTag = regexp.MustCompile(`(?i)\b(IQ\d+(?:_[A-Z0-9]+)*|Q\d+(?:_[A-Z0-9]+)*|BF16|F16|F32)\b`)
+
+// detectQuantFromFilename extracts a quant tag from a GGUF filename, e.g. "Q4_K_M" from
+// "Model.Q4_K_M.gguf". Returns "" if no known quant pattern is found.
+func detectQuantFromFilename(filename string) string {
+	if m := reQuantTag.FindString(filename); m != "" {
+		return strings.ToUpper(m)
+	}
+	return ""
+}
+
+// parseHFURL detects a full HuggingFace URL and extracts (repoID, filename, cleanURL).
+// Returns ok=false for non-URL arguments.
+func parseHFURL(arg string) (repoID, filename, cleanURL string, ok bool) {
+	const hfBase = "https://huggingface.co/"
+	var path string
+	switch {
+	case strings.HasPrefix(arg, hfBase):
+		path = strings.TrimPrefix(arg, hfBase)
+	case strings.HasPrefix(arg, "http://huggingface.co/"):
+		path = strings.TrimPrefix(arg, "http://huggingface.co/")
+	default:
+		return "", "", "", false
+	}
+	// Strip query string.
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	// Expect: {owner}/{repo}/resolve/{branch}/{filename}
+	parts := strings.SplitN(path, "/", 5)
+	if len(parts) != 5 || parts[2] != "resolve" {
+		return "", "", "", false
+	}
+	repoID = parts[0] + "/" + parts[1]
+	filename = parts[4]
+	cleanURL = hfBase + repoID + "/resolve/" + parts[3] + "/" + filename
+	return repoID, filename, cleanURL, true
+}
 
 func resolveCmd() *cobra.Command {
 	var (
@@ -28,6 +69,22 @@ func resolveCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			repoID := args[0]
+
+			// Accept full HF URLs: parse out repo ID, filename, and direct URL.
+			var directURL, directFilename string
+			if parsedRepo, parsedFile, parsedURL, ok := parseHFURL(repoID); ok {
+				repoID = parsedRepo
+				directFilename = parsedFile
+				directURL = parsedURL
+				if format == "" && strings.HasSuffix(strings.ToLower(parsedFile), ".gguf") {
+					format = "gguf"
+				}
+				if format == "gguf" && quant == "" {
+					if q := detectQuantFromFilename(parsedFile); q != "" {
+						quant = q
+					}
+				}
+			}
 
 			cfg, err := loadConfig()
 			if err != nil {
@@ -62,9 +119,21 @@ func resolveCmd() *cobra.Command {
 			dlOpts := hf.DownloadOptions{NoProgress: jsonOut}
 
 			if format == "gguf" {
-				destPath = resolver.ShelfPathGGUF(cfg.ShelfRoot, repoID, quant)
-				url := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s",
-					repoID, resolver.HFFilename(repoID, quant))
+				// Determine actual filename: prefer URL-parsed name, then repo listing,
+				// then fall back to the HFFilename best-guess.
+				filename := directFilename
+				if filename == "" {
+					if f, err := hf.FindGGUFFilename(repoID, quant, dlOpts.Token); err == nil && f != "" {
+						filename = f
+					} else {
+						filename = resolver.HFFilename(repoID, quant)
+					}
+				}
+				destPath = resolver.ShelfPathGGUFFile(cfg.ShelfRoot, repoID, filename)
+				url := directURL
+				if url == "" {
+					url = fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repoID, filename)
+				}
 				if err := hf.DownloadFile(url, destPath, dlOpts); err != nil {
 					return fmt.Errorf("download failed: %w", err)
 				}

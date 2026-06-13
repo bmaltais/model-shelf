@@ -80,8 +80,10 @@ func DetectFormat(repoID string) string {
 	return "safetensors"
 }
 
-// HFFilename returns the filename for a GGUF file in a HuggingFace repo.
+// HFFilename returns a best-guess filename for a GGUF file in a HuggingFace repo.
 // Strips the -GGUF suffix and avoids doubling the quant tag.
+// Use FindLocalGGUF for local lookups and hf.FindGGUFFilename for remote lookups,
+// which both handle repos that use "." instead of "-" as the separator.
 func HFFilename(repoID, quant string) string {
 	name := repoID[strings.LastIndex(repoID, "/")+1:]
 	if strings.HasSuffix(strings.ToLower(name), "-gguf") {
@@ -93,10 +95,40 @@ func HFFilename(repoID, quant string) string {
 	return name + "-" + quant + ".gguf"
 }
 
-// ShelfPathGGUF returns the shelf path for a GGUF file.
+// ShelfPathGGUF returns the shelf path for a GGUF file using HFFilename guessing.
 func ShelfPathGGUF(shelfRoot, repoID, quant string) string {
 	publisher, repo := splitRepoID(repoID)
 	return filepath.Join(shelfRoot, "gguf", publisher, repo, HFFilename(repoID, quant))
+}
+
+// ShelfPathGGUFFile returns the shelf path for a GGUF file with an explicit filename.
+func ShelfPathGGUFFile(shelfRoot, repoID, filename string) string {
+	publisher, repo := splitRepoID(repoID)
+	return filepath.Join(shelfRoot, "gguf", publisher, repo, filename)
+}
+
+// FindLocalGGUF scans the shelf directory for any .gguf file whose name
+// contains quant (case-insensitive). Returns the full path if found, else "".
+// This handles repos where the separator before the quant tag is "." instead of "-".
+func FindLocalGGUF(shelfRoot, repoID, quant string) string {
+	publisher, repo := splitRepoID(repoID)
+	dir := filepath.Join(shelfRoot, "gguf", publisher, repo)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	ql := strings.ToLower(quant)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		nl := strings.ToLower(name)
+		if strings.HasSuffix(nl, ".gguf") && strings.Contains(nl, ql) {
+			return filepath.Join(dir, name)
+		}
+	}
+	return ""
 }
 
 // ShelfPathSnapshot returns the shelf directory for mlx/safetensors.
@@ -176,18 +208,22 @@ func ResolveLocal(cfg *Config, repoID, format, quant string) (*ResolveResult, er
 	}
 	var checks []Check
 	for _, root := range ListCandidates(cfg) {
-		var candidate string
-		if format == "gguf" {
-			candidate = ShelfPathGGUF(root, repoID, quant)
-		} else {
-			candidate = ShelfPathSnapshot(root, repoID, format)
-		}
 		shelfDir := filepath.Join(root, format)
-		if isHit(candidate, format) {
+		var hitPath string
+		if format == "gguf" {
+			// Scan the directory to match any separator convention ("." or "-").
+			hitPath = FindLocalGGUF(root, repoID, quant)
+		} else {
+			candidate := ShelfPathSnapshot(root, repoID, format)
+			if isHit(candidate, format) {
+				hitPath = candidate
+			}
+		}
+		if hitPath != "" {
 			checks = append(checks, Check{Location: "shelf", Root: shelfDir, Result: "hit"})
 			return &ResolveResult{
 				Status: "found", Source: "local_shelf", Format: format,
-				Path: candidate, Checks: checks,
+				Path: hitPath, Checks: checks,
 			}, nil
 		}
 		checks = append(checks, Check{Location: "shelf", Root: shelfDir, Result: "miss"})
