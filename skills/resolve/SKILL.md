@@ -1,11 +1,11 @@
 ---
 name: resolve
-description: Manage Hugging Face models via model-shelf — resolve locally, pull to mesh nodes, check inventory, and administer the mesh. Triggers whenever the user asks to load, run, download, place, or manage LLM models across machines.
+description: Manage Hugging Face models via model-shelf — resolve locally, search Hub, and list the curated shelf. Triggers whenever the user asks to load, run, download, or find LLM models.
 ---
 
 # Model Shelf — Agent Skill
 
-When the user wants to load, run, download, or manage Hugging Face models —
+When the user wants to load, run, download, or find Hugging Face models —
 **always** go through `model-shelf`. Do not invoke `huggingface-cli download`,
 `hf download`, `snapshot_download`, or any other direct download command.
 
@@ -19,13 +19,13 @@ data is stale and Model Shelf can search the live Hub.
 ### 1. Search (when you don't have an exact repo id)
 
 ```bash
-model-shelf find "<user's words>" [--format gguf|mlx|safetensors] --json --limit 5
+model-shelf find "<user's words>" [--format gguf|mlx|safetensors] [--limit 5] --json
 ```
 
 Pick the top result that matches the user's format/quant intent. Use its
-`repo_id` as input to resolve or pull.
+`repo_id` as input to `resolve`.
 
-### 2. Resolve (local, synchronous — returns a path)
+### 2. Resolve (local check → download if missing)
 
 Use when the agent needs a model available **locally right now** to run
 inference or pass to a runtime.
@@ -35,161 +35,78 @@ model-shelf resolve <repo_id> [--format gguf|mlx|safetensors] [--quant <QUANT>] 
 ```
 
 - `--format` is auto-detected from `repo_id` if omitted.
-- `--quant` is **required for gguf**; ignored otherwise.
-- Returns JSON with the following fields:
-  - `status`: `"found"` (already local), `"downloaded"` (just fetched), `"missing"` (not found anywhere, exit 1), or `"missing_locally"` (exists on a mesh peer but not locally, exit 2).
-  - `path`: absolute path to the model file (present when status is `found` or `downloaded`).
-  - `mesh_available`: array of peer locations that have the model (present when `status == "missing_locally"`).
+- `--quant` is **required for gguf** (e.g. `Q4_K_M`); ignored for mlx/safetensors.
+- If the model is missing and `allow_downloads = true` (default), it downloads automatically with a progress bar.
+- Returns JSON:
 
-### 3. Pull (async, mesh-aware — places model on a node)
-
-Use when the user wants a model available on a specific machine, or wants
-model-shelf to pick the best Executor automatically.
-
-```bash
-# Auto-place on best Executor (smart placement by VRAM + disk)
-model-shelf pull <repo_id> [--format F] [--quant Q] --json
-
-# Explicit target
-model-shelf pull <repo_id> [--format F] [--quant Q] --target <node> --json
-```
-
-- Fire-and-forget. Returns a job ID immediately.
-- If the user specifies where, pass `--target`. Otherwise let model-shelf decide.
-- If the model already exists on a peer node, model-shelf transfers from
-  the peer instead of re-downloading from HF (peer-to-peer transfer).
-- Progress is tracked via `model-shelf status <job_id> --json`.
-
-### 4. Check status of in-flight operations
-
-```bash
-model-shelf status --json           # aggregate from all mesh nodes (default)
-model-shelf status --mesh --json    # explicitly aggregate across all nodes
-model-shelf status --local --json   # local node only
-model-shelf status <job_id> --json
-```
-
-### 5. Inventory (what models are where)
-
-```bash
-model-shelf inventory --json
-```
-
-## Mesh Administration
-
-Use these when the user asks to set up machines, manage the mesh, or
-configure nodes.
-
-### Initialize a new node / first node in mesh
-
-```bash
-# First node (bootstraps mesh, generates mesh key)
-model-shelf init --role controller,store --shelf /path/to/models
-
-# Subsequent nodes — init first, then join
-model-shelf init --role store,executor --shelf /data/models
-model-shelf join <peer_node>
-```
-
-`--shelf` is required — the user must specify where models are stored.
-`--role` accepts: controller, store, executor (comma-separated, combinable).
-`init` does not accept a `--join` flag; use `model-shelf join` as a separate step.
-
-### Join an existing mesh (if init was done standalone)
-
-```bash
-model-shelf join <peer_node> [--key <mesh_key>]
-```
-
-### View nodes in the mesh
-
-```bash
-model-shelf nodes --json
-```
-
-Returns node health including GPU capabilities and disk metrics:
 ```json
-[
-  {"name": "gpu-box-1", "status": "online", "roles": ["executor","store"], "gpu": {"name": "NVIDIA A100", "vram_total_gb": 80, "vram_available_gb": 72}, "disk_total_gb": 1000, "disk_free_gb": 450},
-  {"name": "nas-store", "status": "online", "roles": ["store"], "gpu": null, "disk_total_gb": 4000, "disk_free_gb": 2000}
-]
+{
+  "status": "found",
+  "source": "local_shelf",
+  "format": "gguf",
+  "path": "/Volumes/MyDrive/ModelShelf/models/gguf/Qwen/Qwen3-14B-GGUF/Qwen3-14B-Q4_K_M.gguf",
+  "checks": [{"location": "shelf", "root": "...", "result": "hit"}]
+}
 ```
 
-Nodes without a GPU report `"gpu": null`.
+`status` values:
+- `"found"` — already on the local shelf; `path` is ready to use.
+- `"downloaded"` — just fetched from HF Hub; `path` is ready to use.
+- `"missing"` — not found; downloads are disabled (`--no-download` or config).
 
-### Change node roles
+### 3. Local-only check (no download)
 
 ```bash
-model-shelf role set store,executor
-model-shelf role add executor
-model-shelf role remove store
+model-shelf resolve <repo_id> [--quant <QUANT>] --no-download --json
 ```
 
-### Service management
+Returns `status="missing"` with exit 1 if not on the shelf. Use this when
+you only want to check presence without fetching.
+
+### 4. List the local shelf
 
 ```bash
-model-shelf service install    # install and enable (auto-starts on login)
-model-shelf service start
-model-shelf service stop
-model-shelf service restart    # stop + start (required after config changes)
-model-shelf service uninstall
+model-shelf list
 ```
 
-### Leave the mesh entirely
+Shows all models currently on the shelf, grouped by format.
 
-```bash
-model-shelf leave
-```
+## Decision Logic
 
-## Decision Logic for the Agent
-
-1. **User wants to run a model locally** → use `resolve`.
-2. **User wants a model on a specific machine** → use `pull --target`.
-3. **User wants a model available for inference but doesn't specify where** → use `pull` (no target, model-shelf picks best Executor by VRAM + disk).
-4. **User asks what's available** → use `inventory`.
-5. **User asks about download/transfer progress** → use `status`.
-6. **User wants to set up a new machine** → use `init` + `join`.
-7. **User asks about the mesh / what machines are connected** → use `nodes`.
-8. **User asks about GPU capacity or which nodes have GPUs** → use `nodes --json` and check `gpu` field.
+1. **User wants to run a model locally** → `resolve` (downloads if needed).
+2. **User doesn't know the exact repo id** → `find` first, then `resolve`.
+3. **User wants to check if a model is already local** → `resolve --no-download`.
+4. **User asks what's on the shelf** → `list`.
 
 ## Error Handling
 
-- If `status == "missing"` on resolve, downloads are disabled — surface to user.
+- If `status == "missing"`, downloads are disabled — tell the user and suggest
+  checking `allow_downloads` in their config or removing `--no-download`.
 - If model-shelf exits non-zero with stderr, surface the error verbatim. Do NOT
   fall back to other download methods. Common causes:
-  - Volume not mounted
   - Shelf not initialized (tell user to run `model-shelf init`)
-  - Node unreachable
-  - No Executor with sufficient VRAM for the requested model
+  - Volume not mounted
+  - `--quant` missing for a GGUF repo
+  - Network error fetching from HF Hub
 
 ## Examples
 
-Loose user input — search then pull:
+Search then resolve:
 ```
-User: "get qwen 3 14b gguf Q4 on the gx10"
+User: "load qwen3 14b gguf Q4"
 You:  model-shelf find "qwen3 14b gguf" --format gguf --json --limit 5
       # pick top result, e.g. Qwen/Qwen3-14B-GGUF
-      model-shelf pull "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --target gx10 --json
+      model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
 ```
 
-Auto-placement:
+Direct resolve (exact repo id known):
 ```
-User: "I need a small coding model available for inference"
-You:  model-shelf find "coding model 7b gguf" --format gguf --json --limit 5
-      # pick best match
-      model-shelf pull "Qwen/Qwen2.5-Coder-7B-GGUF" --quant Q4_K_M --json
-      # model-shelf picks the best Executor automatically
+User: "load mlx-community/Qwen3-14B-4bit"
+You:  model-shelf resolve "mlx-community/Qwen3-14B-4bit" --json
 ```
 
-Local resolve:
+Local-only check:
 ```
-User: "load Qwen/Qwen3-14B-GGUF with Q4_K_M"
-You:  model-shelf resolve "Qwen/Qwen3-14B-GGUF" --quant Q4_K_M --json
-```
-
-Mesh admin:
-```
-User: "set up this machine as a storage node and join the mesh"
-You:  model-shelf init --role store --shelf /data/models
-      model-shelf join mini1
+User: "do I already have Mistral-7B on the shelf?"
+You:  model-shelf resolve "mistralai/Mistral-7B-v0.1" --no-download --json
 ```
