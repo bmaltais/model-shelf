@@ -1,94 +1,112 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/bmaltais/model-shelf/internal/config"
 )
 
-func TestLoadConfig_ExplicitPathNotFound(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	missingCfg := filepath.Join(t.TempDir(), "subdir", "missing.toml")
-	_, err := LoadConfig(missingCfg)
-	if err == nil {
-		t.Fatal("expected error when explicit config path does not exist")
+func TestLoadConfig_ExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	content := `shelf_root = "/tmp/myshelf"
+allow_downloads = false
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "config file not found") {
-		t.Errorf("expected 'config file not found' error, got: %s", err.Error())
-	}
-}
 
-func TestLoadConfig_ExplicitPathNonExistentParent(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	missingCfg := filepath.Join(t.TempDir(), "no-such-parent", "deep", "config.toml")
-	_, err := LoadConfig(missingCfg)
-	if err == nil {
-		t.Fatal("expected error when explicit config path parent does not exist")
-	}
-	if !strings.Contains(err.Error(), "config file not found") {
-		t.Errorf("expected 'config file not found' error, got: %s", err.Error())
-	}
-}
-
-func TestLoadConfig_ExplicitPathExists(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	cfgPath := filepath.Join(home, "config.toml")
-	shelfRoot := filepath.Join(home, "models")
-	os.MkdirAll(shelfRoot, 0o755)
-	os.WriteFile(cfgPath, []byte("shelf_root = \""+shelfRoot+"\"\n"), 0o644)
-
-	cfg, err := LoadConfig(cfgPath)
+	cfg, err := config.LoadRaw(cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.ShelfRoot != shelfRoot {
-		t.Errorf("got shelf_root=%q, want %q", cfg.ShelfRoot, shelfRoot)
+	if cfg.ShelfRoot != "/tmp/myshelf" {
+		t.Errorf("ShelfRoot = %q, want /tmp/myshelf", cfg.ShelfRoot)
+	}
+	if cfg.AllowDownloads {
+		t.Error("AllowDownloads should be false")
 	}
 }
 
-func TestLoadConfig_EmptyConfigErrorsWhenNoShelf(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	// Write an empty config (like /dev/null would produce).
-	cfgPath := filepath.Join(home, "config.toml")
-	os.WriteFile(cfgPath, []byte(""), 0o644)
-
-	_, err := LoadConfig(cfgPath)
-	if err == nil {
-		t.Fatal("expected error when config has no shelf_root and no initialized shelf exists")
+func TestLoadConfig_NoShelfRoot(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("allow_downloads = true\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "no configured shelf found") {
-		t.Errorf("expected 'no configured shelf found' error, got: %s", err.Error())
-	}
-}
 
-func TestLoadConfig_EmptyConfigSucceedsWithInitializedFallback(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	// Create the fallback shelf with format subdirectories (as if previously initialized).
-	fallback := filepath.Join(home, ".cache", "model-shelf", "models")
-	os.MkdirAll(filepath.Join(fallback, "gguf"), 0o755)
-	os.MkdirAll(filepath.Join(fallback, "mlx"), 0o755)
-	os.MkdirAll(filepath.Join(fallback, "safetensors"), 0o755)
-
-	// Write an empty config.
-	cfgPath := filepath.Join(home, "config.toml")
-	os.WriteFile(cfgPath, []byte(""), 0o644)
-
-	cfg, err := LoadConfig(cfgPath)
+	cfg, err := config.LoadRaw(cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.ShelfRoot != fallback {
-		t.Errorf("got shelf_root=%q, want %q", cfg.ShelfRoot, fallback)
+	if cfg.ShelfRoot != "" {
+		t.Errorf("ShelfRoot should be empty, got %q", cfg.ShelfRoot)
+	}
+	if !cfg.AllowDownloads {
+		t.Error("AllowDownloads should default to true")
+	}
+}
+
+func TestWriteConfig_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	if err := config.WriteConfig(cfgPath, "/some/shelf", true); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadRaw(cfgPath)
+	if err != nil {
+		t.Fatalf("load after write: %v", err)
+	}
+	if cfg.ShelfRoot != "/some/shelf" {
+		t.Errorf("ShelfRoot = %q, want /some/shelf", cfg.ShelfRoot)
+	}
+	if !cfg.AllowDownloads {
+		t.Error("AllowDownloads should be true")
+	}
+}
+
+func TestWriteConfig_NoShelfRoot(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	if err := config.WriteConfig(cfgPath, "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadRaw(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ShelfRoot != "" {
+		t.Errorf("ShelfRoot should be empty after writing empty root, got %q", cfg.ShelfRoot)
+	}
+}
+
+func TestBootstrapDefault_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sub", "config.toml")
+
+	result, err := config.BootstrapDefault(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != cfgPath {
+		t.Errorf("BootstrapDefault returned %q, want %q", result, cfgPath)
+	}
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Errorf("config file not created: %v", err)
+	}
+
+	// Calling again is a no-op.
+	result2, err := config.BootstrapDefault(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result2 != cfgPath {
+		t.Errorf("second call returned %q, want %q", result2, cfgPath)
 	}
 }
