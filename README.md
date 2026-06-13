@@ -29,10 +29,22 @@ Local AI workflows download the same model files over and over — across tools,
 
 ### Go binary (recommended)
 
-Download the latest binary for your platform from [Releases](https://github.com/bmaltais/model-shelf/releases):
+**Linux / macOS — one-liner installer:**
 
 ```bash
-# User-local install (no sudo required)
+curl -fsSL https://raw.githubusercontent.com/bmaltais/model-shelf/main/install.sh | bash
+```
+
+Installs to `~/.local/bin` (no sudo required). Override the destination with `MODEL_SHELF_INSTALL_DIR=/usr/local/bin bash` before piping, or set the env var:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bmaltais/model-shelf/main/install.sh | MODEL_SHELF_INSTALL_DIR=/usr/local/bin bash
+```
+
+<details>
+<summary>Manual per-platform install</summary>
+
+```bash
 mkdir -p ~/.local/bin
 
 # macOS Apple Silicon
@@ -56,14 +68,6 @@ Invoke-WebRequest -Uri https://github.com/bmaltais/model-shelf/releases/latest/d
 ```
 
 > **Note:** Ensure `~/.local/bin` is on your PATH. Add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if needed.
-
-<details>
-<summary>System-wide install (requires sudo)</summary>
-
-```bash
-curl -L https://github.com/bmaltais/model-shelf/releases/latest/download/model-shelf-linux-amd64 -o model-shelf
-chmod +x model-shelf && sudo mv model-shelf /usr/local/bin/
-```
 </details>
 
 ### Build from source
